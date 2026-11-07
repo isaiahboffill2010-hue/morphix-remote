@@ -79,9 +79,6 @@ function Pair({ onDone }: { onDone: () => void }) {
         )}
         <small>The QR appears on the Pi · No account or password</small>
       </section>
-      {!API && (
-        <div className="error fixed">VITE_MORPHIX_REMOTE_URL is missing.</div>
-      )}
     </main>
   );
 }
@@ -662,11 +659,13 @@ export function App() {
         </button>
         <button
           onClick={() => {
-            forgetToken();
-            setPaired(false);
+            if (confirm("Unpair this device from Morphix Remote? You will need to scan the Pi's QR again.")) {
+              forgetToken();
+              setPaired(false);
+            }
           }}
         >
-          <span>⚙</span>Device
+          <span>⇥</span>Unpair
         </button>
       </nav>
       {toast && <div className="toast">{toast}</div>}
