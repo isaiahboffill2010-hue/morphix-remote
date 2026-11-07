@@ -4,6 +4,23 @@
 import { fitsBuildVolume } from "@morphix/domain";
 import { QD330_BUILD_VOLUME_MM } from "@morphix/shared";
 
+// Phase 3 print-preparation engine (see docs/PHASE3.md). Anything that touches the
+// QD330 file format or slicer profiles is UNVERIFIED against official Afinia output.
+export * from "./mesh";
+export * from "./stl";
+export * from "./glb";
+export * from "./topology";
+export * from "./validate";
+export * from "./repair";
+export * from "./place";
+export * from "./upaxis";
+export * from "./gcode";
+export * from "./thumbnail";
+export * from "./gx";
+export * from "./profiles";
+export * from "./slicer";
+export * from "./prepare";
+
 export interface SizeCheck {
   size: { x: number; y: number; z: number };
   fits: boolean;
