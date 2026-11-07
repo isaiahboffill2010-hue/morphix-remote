@@ -2,7 +2,6 @@ import { crc32 as zlibCrc32 } from "node:zlib";
 import { describe, expect, it } from "vitest";
 import {
   assertStoredFileName,
-  buildPacket,
   crc32,
   encodeCommand,
   encodeFileList,
@@ -37,17 +36,9 @@ describe("phase 5 wire protocol", () => {
     expect(isAcknowledged("CMD M23 Received.\r\nFile opened: fail_test.gx Size: 9\r\nFile selected\r\nok\r\n", "M23", "fail_test.gx")).toBe(true);
   });
 
-  it("crc32 matches zlib and packets use the verified 16-byte header + 4096 padding", () => {
+  it("crc32 matches zlib", () => {
     const chunk = Buffer.from("G28\nG1 X10\n");
     expect(crc32(chunk)).toBe(zlibCrc32(chunk));
-    const p = buildPacket(3, chunk);
-    expect(p.length).toBe(16 + 4096);
-    expect(p.readUInt32BE(0)).toBe(0x5a5aa5a5);
-    expect(p.readUInt32BE(4)).toBe(3);
-    expect(p.readUInt32BE(8)).toBe(chunk.length);
-    expect(p.readUInt32BE(12)).toBe(zlibCrc32(chunk));
-    expect(p.subarray(16, 16 + chunk.length).equals(chunk)).toBe(true);
-    expect(p.subarray(16 + chunk.length).every((b) => b === 0)).toBe(true);
   });
 
   it("parses the binary M661 list (with and without trailing ok, and incomplete)", () => {

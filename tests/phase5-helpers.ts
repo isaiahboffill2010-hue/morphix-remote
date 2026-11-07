@@ -52,6 +52,7 @@ export async function startRig(opts: FakeQD330Options = {}, cleanup: (fn: () => 
         confirmTimeoutMs: 500,
         pollIntervalMs: 20,
         packetDelayMs: 0,
+        uploadFlushDelayMs: 0,
         authorizer: auth,
         log: (e) => log.push(e),
         ...extra,

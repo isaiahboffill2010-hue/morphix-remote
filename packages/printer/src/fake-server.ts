@@ -1,20 +1,13 @@
 // A fake Afinia QD330 on 127.0.0.1 for tests and demos. Reproduces the reply
 // formats recorded from the real printer (firmware v2.1.3): "CMD X Received."
-// … "ok", the binary M661 list, M28 packet framing with CRC checks, and the
+// … "ok", the binary M661 list, M28 raw-byte uploads (exactly <size> bytes, then M29), and the
 // M23/M25/M24/M26 state changes. It can also misbehave on purpose.
 // Machine controls are emulated too: G28 homing (MoveMode MOVING, then M114 at
 // 110/110/220), M146 light (M119 "LED:"), M106/M107 fan, M104/M140 targets with
 // heating over time (M105), M18 motors, M112.
 // Strings and behaviours marked UNVERIFIED are guesses; the real printer may differ.
 import { createServer, type Server, type Socket } from "node:net";
-import {
-  crc32,
-  encodeFileList,
-  PACKET_DATA_SIZE,
-  PACKET_HEADER_SIZE,
-  PACKET_MAGIC,
-  packetCount,
-} from "./protocol";
+import { encodeFileList, PACKET_DATA_SIZE } from "./protocol";
 
 export interface FakeQD330Failures {
   /** M601 S1 answers "Control failed." */
@@ -23,9 +16,9 @@ export interface FakeQD330Failures {
   silent?: string[];
   /** Verbs on which the fake drops the connection instead of answering. */
   dropOn?: string[];
-  /** Packet index whose CRC is treated as wrong. */
-  corruptPacket?: number;
-  /** Drop the connection when this packet index arrives. */
+  /** The upload arrives but M29 reports a write error. */
+  corruptUpload?: boolean;
+  /** Drop the connection once the upload reaches this 4 KB chunk index. */
   dropOnPacket?: number;
   /** M28 answers with an error. */
   rejectUpload?: boolean;
@@ -79,8 +72,7 @@ export interface FakeQD330Options {
 interface Upload {
   name: string;
   size: number;
-  total: number;
-  next: number;
+  received: number;
   chunks: Buffer[];
   error?: string;
 }
@@ -237,12 +229,16 @@ export class FakeQD330 {
   private process(c: Conn) {
     for (;;) {
       if (c.sock.destroyed) return;
-      if (c.upload && c.upload.next < c.upload.total) {
-        const n = PACKET_HEADER_SIZE + PACKET_DATA_SIZE;
-        if (c.buf.length < n) return;
-        const pkt = c.buf.subarray(0, n);
-        c.buf = c.buf.subarray(n);
-        this.packet(c, pkt);
+      if (c.upload && c.upload.received < c.upload.size) {
+        // Like the real printer: the next <size> bytes are file data, whatever they contain.
+        if (c.buf.length === 0) return;
+        const u = c.upload;
+        const take = Math.min(c.buf.length, u.size - u.received);
+        const drop = this.failures.dropOnPacket;
+        if (drop !== undefined && u.received + take > drop * PACKET_DATA_SIZE) return void c.sock.destroy();
+        u.chunks.push(Buffer.from(c.buf.subarray(0, take)));
+        u.received += take;
+        c.buf = c.buf.subarray(take);
         continue;
       }
       const nl = c.buf.indexOf("\n");
@@ -378,7 +374,7 @@ export class FakeQD330 {
         const m = /^M28\s+(\d+)\s+0:\/user\/(.+)$/.exec(cmd);
         if (f.rejectUpload || !m) return this.reply(c, verb, ["Error: cannot open file for writing"]); // UNVERIFIED wording
         const size = Number(m[1]);
-        c.upload = { name: m[2], size, total: packetCount(size), next: 0, chunks: [] };
+        c.upload = { name: m[2], size, received: 0, chunks: [], error: f.corruptUpload ? "write error" : undefined };
         return this.reply(c, verb, [`Writing to file: /data/${m[2]}`]);
       }
       case "M29": {
@@ -433,29 +429,5 @@ export class FakeQD330 {
       default:
         return this.reply(c, verb);
     }
-  }
-
-  private packet(c: Conn, pkt: Buffer) {
-    const u = c.upload!;
-    const idx = u.next++;
-    if (this.failures.dropOnPacket === idx) return void c.sock.destroy();
-    if (u.error) return;
-    const magic = pkt.readUInt32BE(0);
-    const index = pkt.readUInt32BE(4);
-    const len = pkt.readUInt32BE(8);
-    const crc = pkt.readUInt32BE(12);
-    const expectLen = idx === u.total - 1 ? u.size - idx * PACKET_DATA_SIZE : PACKET_DATA_SIZE;
-    const data = pkt.subarray(PACKET_HEADER_SIZE, PACKET_HEADER_SIZE + Math.min(len, PACKET_DATA_SIZE));
-    let error: string | undefined;
-    if (magic !== PACKET_MAGIC) error = `bad packet magic at packet ${idx}`;
-    else if (index !== idx) error = `packet index ${index}, expected ${idx}`;
-    else if (len !== expectLen) error = `packet ${idx} length ${len}, expected ${expectLen}`;
-    else if (crc !== crc32(data) || this.failures.corruptPacket === idx) error = `CRC mismatch at packet ${idx}`;
-    if (error) {
-      u.error = error;
-      this.send(c, `Error: ${error}\r\n`); // UNVERIFIED: the real printer's per-packet error reporting is unknown
-      return;
-    }
-    u.chunks.push(Buffer.from(data));
   }
 }

@@ -105,11 +105,11 @@ export function isAcknowledged(reply: string, verb: string, fileName?: string): 
 
 export const REPLY_ERROR = /error|fail|refus|denied|invalid|crc/i;
 
-// ---- upload packets (verified on the real printer with a single packet) --------
+// ---- upload ------------------------------------------------------------------
+// M28 <size> 0:/user/<name>, then exactly <size> raw bytes (no framing), a short pause, M29.
 
-export const PACKET_MAGIC = 0x5a5aa5a5;
+/** Upload chunk size (progress granularity only; the printer sees one raw byte stream). */
 export const PACKET_DATA_SIZE = 4096;
-export const PACKET_HEADER_SIZE = 16;
 
 const CRC_TABLE = (() => {
   const t = new Uint32Array(256);
@@ -126,18 +126,6 @@ export function crc32(data: Uint8Array): number {
   let c = 0xffffffff;
   for (let i = 0; i < data.length; i++) c = CRC_TABLE[(c ^ data[i]) & 0xff] ^ (c >>> 8);
   return (c ^ 0xffffffff) >>> 0;
-}
-
-/** 16-byte BE header (magic, index, length, crc32 of unpadded chunk) + chunk zero-padded to 4096 bytes. */
-export function buildPacket(index: number, chunk: Uint8Array): Buffer {
-  if (chunk.length === 0 || chunk.length > PACKET_DATA_SIZE) throw new RangeError(`bad chunk length ${chunk.length}`);
-  const out = Buffer.alloc(PACKET_HEADER_SIZE + PACKET_DATA_SIZE);
-  out.writeUInt32BE(PACKET_MAGIC, 0);
-  out.writeUInt32BE(index, 4);
-  out.writeUInt32BE(chunk.length, 8);
-  out.writeUInt32BE(crc32(chunk), 12);
-  out.set(chunk, PACKET_HEADER_SIZE);
-  return out;
 }
 
 export function packetCount(size: number): number {

@@ -57,7 +57,7 @@ describe("QD330Controller: files and upload", () => {
     expect(r.data?.map((f) => f.name)).toEqual(["Afinia_Cube.gx"]);
   });
 
-  it("uploads a multi-packet .gx with CRC-checked packets, reports progress, and confirms via M661", async () => {
+  it("uploads a multi-chunk .gx as raw bytes (stored byte-for-byte), reports progress, and confirms via M661", async () => {
     const rig = await startRig({}, cleanup);
     const data = Buffer.alloc(4096 * 2 + 100);
     for (let i = 0; i < data.length; i++) data[i] = (i * 7) & 0xff;
@@ -75,13 +75,21 @@ describe("QD330Controller: files and upload", () => {
     expect(s.confirmed).toBe(true);
   });
 
-  it("reports a CRC mismatch as a failed, unconfirmed upload", async () => {
-    const rig = await startRig({ failures: { corruptPacket: 1 } }, cleanup);
+  it("reports a write error on M29 as a failed, unconfirmed upload", async () => {
+    const rig = await startRig({ failures: { corruptUpload: true } }, cleanup);
     const token = rig.auth.authorize({ jobId: "j", fileName: "big.gx", approvedBy: "touch" });
     const r = await rig.controller().uploadFile("big.gx", Buffer.alloc(9000, 1), { jobId: "j", authorization: token });
     expect(r).toMatchObject({ sent: true, acknowledged: false, confirmed: false });
-    expect(r.error).toMatch(/CRC mismatch at packet 1/);
+    expect(r.error).toMatch(/did not finish the upload/);
     expect(rig.fake.files.has("big.gx")).toBe(false);
+  });
+
+  it("fails the upload when M29 is never answered (the file may be incomplete)", async () => {
+    const rig = await startRig({ failures: { silent: ["M29"] } }, cleanup);
+    const token = rig.auth.authorize({ jobId: "j", fileName: "quiet.gx", approvedBy: "touch" });
+    const r = await rig.controller().uploadFile("quiet.gx", GX, { jobId: "j", authorization: token });
+    expect(r).toMatchObject({ sent: true, acknowledged: false, confirmed: false });
+    expect(r.error).toMatch(/did not confirm it saved the file/);
   });
 
   it("reports a rejected M28, a dropped connection mid-upload, and a file that never appears", async () => {

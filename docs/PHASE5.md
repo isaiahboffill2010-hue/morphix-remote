@@ -8,7 +8,7 @@ Everything lives in `packages/printer/src` and is exported from `@morphix/printe
 | File | What it holds |
 |---|---|
 | `index.ts` | Phase 1 observer (`TcpTransport`, `PrinterObserver`, …), unchanged behaviour; re-exports everything below |
-| `protocol.ts` | Wire format: command framing, reply parsing, upload packets, CRC-32, M661 list parser. Pure functions |
+| `protocol.ts` | Wire format: command framing, reply parsing, raw-byte upload chunks, CRC-32, M661 list parser. Pure functions |
 | `names.ts` | `sanitizeFileName` (uploads), `assertStoredFileName` (files already on the printer) |
 | `auth.ts` | `authorizePrint`, `PrintAuthorizer`, `PrintAuthorization` tokens |
 | `control.ts` | `QD330Controller`: job control (listFiles, uploadFile, startPrint, pause, resume, cancel) and machine control (readInfo, home, setLight, setFan, setNozzleTemp, setBedTemp, coolDown, motorsOff, emergencyStop, capabilities) |
@@ -34,7 +34,7 @@ Tests: `tests/phase5-*.test.ts` and `tests/printer-control-*.test.ts`. They only
 4. **Pause and cancel need no token** (stopping must always be possible) but take `{ requestedBy: "touch" | "voice" | "guardian" | "system", reason? }` and are always logged.
 5. **Confirmed, not assumed.** Every result is `{ sent, acknowledged, confirmed, status, error }`. Only `confirmed` means done, and it is set only when the printer's own status (M119/M27, polled until a timeout) shows the expected change. A `Received … ok` reply without the status change is reported as `acknowledged: true, confirmed: false` with an error.
 6. **Preconditions before sending.** Upload only when `READY` and (unless `overwrite`) the name is not already stored. Start only when `READY` and the file is in the M661 list. Pause only when `BUILDING_FROM_SD`. Resume only from a paused status, and only for the paused file. Cancel is always sent.
-7. **File names.** Uploads are sanitised to `[A-Za-z0-9._-]`, ≤ 64 chars, `.gx` only (`.g` only with `allowPlainGcode: true`; plain `.g` stalled at 0% on the real printer). Files already on the printer (e.g. official Afinia files with spaces) are passed through `assertStoredFileName`, which rejects `/ \ ~`, control characters and leading dots, so nothing can inject a second command.
+7. **File names.** Uploads are sanitised to `[A-Za-z0-9._-]`, ≤ 64 chars, `.gx` only (`.g` only with `allowPlainGcode: true`; plain `.g` was only ever tried with the old framed upload, which corrupted the file). Files already on the printer (e.g. official Afinia files with spaces) are passed through `assertStoredFileName`, which rejects `/ \ ~`, control characters and leading dots, so nothing can inject a second command.
 8. **No direct G-code.** The controller has no method that sends arbitrary commands; commands are built only from the verbs listed below.
 9. **One thing at a time.** All control and status traffic goes through one queue; every session is `M601 S1 … M602`.
 10. **Machine controls** ([below](#machine-controls)) are behind the same `enabled` switch. Commands not verified on this printer also need their own `allowUnverified` flag, set by the operator one at a time after the [machine checklist](#machine-controls-validation-checklist). Heating needs an explicit `approvedBy` and arms an idle safety timer. Repeated taps are debounced. Cancel, cool-down and emergency stop are never debounced.
@@ -58,7 +58,8 @@ const controller = new QD330Controller({
   startConfirmTimeoutMs: 20_000, // wait for BUILDING_FROM_SD after M23
   confirmTimeoutMs: 10_000,    // wait for the expected status after M25/M24/M26
   pollIntervalMs: 1000,
-  packetDelayMs: 50,           // between upload packets
+  packetDelayMs: 0,            // between 4 KB upload chunks
+  uploadFlushDelayMs: 3000,    // pause before M29
   maxUploadBytes: 64 MiB,
   allowPlainGcode: false,
   pausedStatuses: ["PAUSED"],  // UNVERIFIED — set from checklist step 6
@@ -71,7 +72,7 @@ const controller = new QD330Controller({
 |---|---|---|---|---|
 | `readStatus()` | M119 M105 M114 M27 | — | (read-only, allowed while disabled) | yes |
 | `listFiles()` | M661 | — | binary list parsed | yes |
-| `uploadFile(name, data, { jobId, authorization, onProgress?, overwrite? })` | M28, packets, M29 | checked, not consumed | file appears in M661 | single packet only |
+| `uploadFile(name, data, { jobId, authorization, onProgress?, overwrite? })` | M28, raw bytes, 3 s pause, M29 | checked, not consumed | file appears in M661 | single packet only |
 | `startPrint({ jobId, fileName, authorization })` | M23 `0:/user/<name>` | consumed | `MachineStatus: BUILDING_FROM_SD` and `CurrentFile` matches | yes (status change); a real `.gx` print: **no** |
 | `pause({ requestedBy, reason? })` | M25 | none, logged | `MachineStatus` ∈ `pausedStatuses` | **no** |
 | `resume({ jobId, fileName, authorization })` | M24 | consumed | `MachineStatus: BUILDING_FROM_SD` | **no** |
@@ -93,7 +94,7 @@ const controller = new QD330Controller({
 
 Throws (nothing sent): `ControllerDisabledError`, `PrintAuthorizationError`, `InvalidFileNameError`, `RangeError` (empty/oversized upload). Every other problem (timeout, dropped connection, printer refusing control, wrong status) comes back as a result with `error` set and `confirmed: false`.
 
-`UploadProgress` passed to `onProgress` after each packet: `{ bytesSent, totalBytes, packetsSent, totalPackets, percent }`.
+`UploadProgress` passed to `onProgress` after each 4 KB chunk: `{ bytesSent, totalBytes, packetsSent, totalPackets, percent }`.
 
 `ControlLogEntry`: `{ at, op, outcome: "rejected" | "failed" | "unconfirmed" | "confirmed", jobId?, fileName?, approvedBy?, requestedBy?, reason?, sent, acknowledged, confirmed, error?, status? }`.
 
@@ -243,10 +244,10 @@ It uses the last status the controller saw (its own reads and every observer pol
 | M115, M119, M105, M114, M27 formats | verified |
 | M661 binary list | verified |
 | M28 `<size> 0:/user/<name>` → `Writing to file: /data/<name>` | verified |
-| Packet framing (16-byte BE header, CRC-32 of unpadded chunk, 4096 padding) | verified with **one** packet; multi-packet uploads unverified |
+| Upload data | **raw bytes, no framing** (as in the open FlashForge Adventurer 4 / legacy-TCP clients). The old 16-byte-header + 4096-padding framing was wrong: the printer stored the header as the start of the file, so jobs opened at 0% and never heated, and the extra bytes swallowed M29 |
 | Per-packet replies / error reporting during upload | unknown (controller scans any unsolicited text for error words) |
-| M29 reply text | unknown (controller requires `Received … ok` without error words) |
-| M23 → `BUILDING_FROM_SD`, `CurrentFile` | verified with a plain `.g` (which then stalled at 0%) |
+| M29 reply | expected to end in `ok` once the data is raw; a missing reply now fails the upload |
+| M23 → `BUILDING_FROM_SD`, `CurrentFile` | verified (the earlier 0% stalls were the corrupted framed uploads) |
 | A real `.gx` printing to completion; M27 values at the end | **unverified** |
 | M26 cancel → `READY` | verified |
 | M25 pause / M24 resume, and the paused MachineStatus string | **unverified** |

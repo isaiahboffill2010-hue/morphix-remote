@@ -53,7 +53,6 @@ import {
 import {
   assertReadOnly,
   baseName,
-  buildPacket,
   cleanReply,
   commandVerb,
   encodeCommand,
@@ -179,8 +178,10 @@ export interface QD330ControllerOptions {
   /** How long to wait for the expected status after M25/M24/M26. */
   confirmTimeoutMs?: number;
   pollIntervalMs?: number;
-  /** Pause between upload packets. Only single-packet uploads are verified on hardware. */
+  /** Pause between upload chunks. Default 0. */
   packetDelayMs?: number;
+  /** Wait after the last byte before sending M29. Default 3000 (as FlashForge senders do). */
+  uploadFlushDelayMs?: number;
   maxUploadBytes?: number;
   /** Accept plain .g files (stalled at 0% on the real printer). Default false. */
   allowPlainGcode?: boolean;
@@ -240,7 +241,7 @@ class ControlSession {
   private buf = Buffer.alloc(0);
   private closed: Error | null = null;
   private waiter: { complete: (b: Buffer) => number; resolve: (b: Buffer) => void; reject: (e: Error) => void } | null = null;
-  /** True between M28 and the last packet: the printer treats incoming bytes as file data. */
+  /** True between M28 and the last data chunk: the printer treats incoming bytes as file data. */
   inDataMode = false;
 
   private constructor(private sock: Socket, private replyTimeoutMs: number) {
@@ -432,7 +433,8 @@ export class QD330Controller {
       startConfirmTimeoutMs: options.startConfirmTimeoutMs ?? 20_000,
       confirmTimeoutMs: options.confirmTimeoutMs ?? 10_000,
       pollIntervalMs: options.pollIntervalMs ?? 1000,
-      packetDelayMs: options.packetDelayMs ?? 50,
+      packetDelayMs: options.packetDelayMs ?? 0,
+      uploadFlushDelayMs: options.uploadFlushDelayMs ?? 3000,
       maxUploadBytes: options.maxUploadBytes ?? 64 * 1024 * 1024,
       allowPlainGcode: options.allowPlainGcode ?? false,
       pausedStatuses: options.pausedStatuses ?? DEFAULT_PAUSED_STATUSES,
@@ -525,34 +527,34 @@ export class QD330Controller {
       r.reply = m28;
       if (!isAcknowledged(m28, "M28", fileName) || !/Writing to file/i.test(m28)) throw new Error(`printer did not accept the upload: ${cleanReply(m28)}`);
 
+      // The printer stores exactly the announced number of raw bytes, then expects M29.
+      // (An earlier version wrapped each 4 KB in a 16-byte header + zero padding; the printer
+      // saved that header as the start of the file, so the job opened but never ran — it sat at
+      // 0% without heating — and the trailing bytes swallowed M29, which is why it was "silent".)
       s.inDataMode = true;
       for (let i = 0; i < total; i++) {
-        const chunk = bytes.subarray(i * PACKET_DATA_SIZE, (i + 1) * PACKET_DATA_SIZE);
-        await s.write(buildPacket(i, chunk));
+        await s.write(bytes.subarray(i * PACKET_DATA_SIZE, (i + 1) * PACKET_DATA_SIZE));
         if (this.o.packetDelayMs > 0) await sleep(this.o.packetDelayMs);
         const pending = cleanReply(s.pendingText());
-        if (REPLY_ERROR.test(pending)) throw new Error(`printer reported an error during upload (packet ${i}): ${pending}`);
+        if (REPLY_ERROR.test(pending)) throw new Error(`printer reported an error during upload (chunk ${i}): ${pending}`);
         const sent = Math.min((i + 1) * PACKET_DATA_SIZE, bytes.length);
         opts.onProgress?.({ bytesSent: sent, totalBytes: bytes.length, packetsSent: i + 1, totalPackets: total, percent: Math.floor((sent * 100) / bytes.length) });
       }
       s.inDataMode = false;
-      await sleep(Math.max(this.o.packetDelayMs, 20));
+      // Give the printer time to write the last bytes before M29 (FlashForge senders wait 3 s).
+      await sleep(this.o.uploadFlushDelayMs);
       const late = cleanReply(s.pendingText());
       if (REPLY_ERROR.test(late)) throw new Error(`printer reported an error during upload: ${late}`);
 
-      // VERIFIED on the real QD330 (firmware v2.1.3): M29 is never answered — not for a 37-byte
-      // file, not for 5.8 MB — and the printer drops the connection ~30 s later if nothing else
-      // is sent. So wait briefly for a reply, then carry on in the same session. Completeness is
-      // checked when the print starts (M23 reports the stored file size).
-      let m29 = "";
+      let m29: string;
       try {
-        m29 = await s.command("M29", Math.min(this.o.uploadFinishTimeoutMs, 5_000));
+        m29 = await s.command("M29", this.o.uploadFinishTimeoutMs);
       } catch (e) {
-        if (!(e instanceof PrinterReplyTimeout)) throw e; // a dropped connection is a real failure
-        m29 = ""; // a silent M29 is normal on this firmware
+        if (e instanceof PrinterReplyTimeout) throw new Error("the printer did not confirm it saved the file (no reply to M29)");
+        throw e;
       }
       r.reply = m28 + m29;
-      if (m29 && REPLY_ERROR.test(cleanReply(m29))) throw new Error(`printer did not finish the upload: ${cleanReply(m29)}`);
+      if (!/(?:^|\n)ok\r?\n?$/.test(m29) || REPLY_ERROR.test(cleanReply(m29))) throw new Error(`printer did not finish the upload: ${cleanReply(m29)}`);
       r.acknowledged = true;
 
       const after = await this.listIn(s);
