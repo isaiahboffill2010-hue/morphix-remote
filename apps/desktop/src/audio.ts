@@ -97,3 +97,45 @@ export async function speakerTest(): Promise<void> {
   await new Promise((r) => setTimeout(r, 700));
   await ctx.close();
 }
+
+/** Plays streamed 16-bit PCM (Gemini speaks at 24 kHz) gap-free through the speaker. */
+export class AudioOut {
+  private ctx: AudioContext | null = null;
+  private next = 0;
+  private sources = new Set<AudioBufferSourceNode>();
+
+  play(pcm: ArrayBuffer, sampleRate: number): void {
+    if (!this.ctx) this.ctx = new AudioContext();
+    const ctx = this.ctx;
+    const ints = new Int16Array(pcm);
+    if (!ints.length) return;
+    const buf = ctx.createBuffer(1, ints.length, sampleRate);
+    const ch = buf.getChannelData(0);
+    for (let i = 0; i < ints.length; i++) ch[i] = ints[i] / 32768;
+    const src = ctx.createBufferSource();
+    src.buffer = buf;
+    src.connect(ctx.destination);
+    this.next = Math.max(this.next, ctx.currentTime + 0.05);
+    src.start(this.next);
+    this.next += buf.duration;
+    this.sources.add(src);
+    src.onended = () => this.sources.delete(src);
+  }
+
+  get playing(): boolean {
+    return this.sources.size > 0;
+  }
+
+  /** Stop immediately (user started talking or Gemini was interrupted). */
+  stop(): void {
+    for (const s of this.sources) {
+      try {
+        s.stop();
+      } catch {
+        /* already stopped */
+      }
+    }
+    this.sources.clear();
+    this.next = 0;
+  }
+}

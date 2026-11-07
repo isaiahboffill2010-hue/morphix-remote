@@ -1,0 +1,238 @@
+// Gemini Live over a raw WebSocket (owned by the Electron main process, so the
+// API key never reaches the renderer). Push-to-talk: automatic voice activity
+// detection is off and each utterance is wrapped in activityStart/activityEnd.
+// Input: 16 kHz mono PCM16. Output: 24 kHz mono PCM16 + transcripts.
+
+export const DEFAULT_LIVE_MODEL = "gemini-3.8-live";
+const WS_URL = "wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent";
+
+export interface FunctionCall {
+  id: string;
+  name: string;
+  args: Record<string, unknown>;
+}
+
+export interface LiveCallbacks {
+  onAudio(pcm24k: Buffer): void;
+  onUserText(text: string): void;
+  onAssistantText(text: string): void;
+  onTurnComplete(): void;
+  onInterrupted(): void;
+  onToolCall(calls: FunctionCall[]): void;
+  onClose(reason: string): void;
+}
+
+export interface FunctionDeclaration {
+  name: string;
+  description: string;
+  parameters?: { type: "OBJECT"; properties: Record<string, unknown>; required?: string[] };
+}
+
+export class GeminiLive {
+  private ws: WebSocket | null = null;
+  private ready: Promise<void> | null = null;
+  private resumeHandle: string | null = null;
+
+  constructor(
+    private apiKey: string,
+    private model: string,
+    private systemInstruction: string,
+    private tools: FunctionDeclaration[],
+    private cb: LiveCallbacks,
+    private voice = "Puck",
+  ) {}
+
+  get connected(): boolean {
+    return this.ws?.readyState === WebSocket.OPEN;
+  }
+
+  /** Opens (or reuses) the session; resumes context after a dropped connection. */
+  ensureConnected(timeoutMs = 12000): Promise<void> {
+    if (this.connected && this.ready) return this.ready;
+    this.ready = new Promise<void>((resolve, reject) => {
+      const ws = new WebSocket(`${WS_URL}?key=${encodeURIComponent(this.apiKey)}`);
+      this.ws = ws;
+      const timer = setTimeout(() => {
+        reject(new Error("Gemini did not respond in time"));
+        ws.close();
+      }, timeoutMs);
+      ws.onopen = () => ws.send(JSON.stringify({ setup: this.setupMessage() }));
+      ws.onmessage = async (ev) => {
+        const raw = typeof ev.data === "string" ? ev.data : Buffer.from(await (ev.data as Blob).arrayBuffer()).toString("utf8");
+        let msg: Record<string, any>;
+        try {
+          msg = JSON.parse(raw);
+        } catch {
+          return;
+        }
+        if (msg.setupComplete) {
+          clearTimeout(timer);
+          resolve();
+          return;
+        }
+        this.handle(msg);
+      };
+      ws.onerror = () => {
+        clearTimeout(timer);
+        reject(new Error("could not connect to Gemini"));
+      };
+      ws.onclose = (ev) => {
+        clearTimeout(timer);
+        if (this.ws === ws) {
+          this.ws = null;
+          this.ready = null;
+        }
+        const reason = ev.reason || `closed (${ev.code})`;
+        reject(new Error(`Gemini closed the connection: ${reason}`));
+        this.cb.onClose(reason);
+      };
+    });
+    return this.ready;
+  }
+
+  setupMessage(): Record<string, unknown> {
+    return {
+      model: `models/${this.model}`,
+      generationConfig: {
+        responseModalities: ["AUDIO"],
+        speechConfig: { languageCode: "en-US", voiceConfig: { prebuiltVoiceConfig: { voiceName: this.voice } } },
+      },
+      systemInstruction: { parts: [{ text: this.systemInstruction }] },
+      tools: [{ functionDeclarations: this.tools }],
+      realtimeInputConfig: { automaticActivityDetection: { disabled: true } },
+      inputAudioTranscription: {},
+      outputAudioTranscription: {},
+      contextWindowCompression: { slidingWindow: {} },
+      sessionResumption: this.resumeHandle ? { handle: this.resumeHandle } : {},
+    };
+  }
+
+  private handle(msg: Record<string, any>): void {
+    if (msg.sessionResumptionUpdate?.resumable && msg.sessionResumptionUpdate.newHandle) {
+      this.resumeHandle = msg.sessionResumptionUpdate.newHandle;
+    }
+    const sc = msg.serverContent;
+    if (sc) {
+      for (const part of sc.modelTurn?.parts ?? []) {
+        if (part.inlineData?.data) this.cb.onAudio(Buffer.from(part.inlineData.data, "base64"));
+      }
+      if (sc.inputTranscription?.text) this.cb.onUserText(sc.inputTranscription.text);
+      if (sc.outputTranscription?.text) this.cb.onAssistantText(sc.outputTranscription.text);
+      if (sc.interrupted) this.cb.onInterrupted();
+      if (sc.turnComplete) this.cb.onTurnComplete();
+    }
+    if (msg.toolCall?.functionCalls?.length) {
+      this.cb.onToolCall(
+        msg.toolCall.functionCalls.map((f: any) => ({ id: String(f.id), name: String(f.name), args: f.args ?? {} })),
+      );
+    }
+  }
+
+  private send(obj: unknown): void {
+    if (!this.connected) throw new Error("Gemini is not connected");
+    this.ws!.send(JSON.stringify(obj));
+  }
+
+  /** Send one complete push-to-talk utterance. */
+  sendUtterance(pcm16k: Buffer): void {
+    this.send({ realtimeInput: { activityStart: {} } });
+    const chunk = 6400; // 200 ms
+    for (let o = 0; o < pcm16k.length; o += chunk) {
+      this.send({ realtimeInput: { audio: { data: pcm16k.subarray(o, o + chunk).toString("base64"), mimeType: "audio/pcm;rate=16000" } } });
+    }
+    this.send({ realtimeInput: { activityEnd: {} } });
+  }
+
+  sendText(text: string): void {
+    this.send({ realtimeInput: { text } });
+  }
+
+  sendToolResponses(responses: { id: string; name: string; response: Record<string, unknown> }[]): void {
+    this.send({ toolResponse: { functionResponses: responses } });
+  }
+
+  close(): void {
+    this.ws?.close();
+    this.ws = null;
+    this.ready = null;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// What Gemini may ask the app to do. Every call goes through the local policy
+// layer in the main process; none of these touch the printer.
+
+export const MORPHIX_TOOLS: FunctionDeclaration[] = [
+  {
+    name: "generate_model",
+    description:
+      "Propose creating a new 3D model with Meshy. Does NOT start until the user confirms the credit cost. Write a detailed prompt for a single, solid, 3D-printable object.",
+    parameters: {
+      type: "OBJECT",
+      properties: {
+        prompt: { type: "STRING", description: "Detailed Meshy text-to-3D prompt (max 600 characters)." },
+        title: { type: "STRING", description: "Short name for the project, 2-5 words." },
+      },
+      required: ["prompt", "title"],
+    },
+  },
+  {
+    name: "revise_model",
+    description: "Propose a new version of the current model with changes. Also needs user confirmation of the credit cost.",
+    parameters: {
+      type: "OBJECT",
+      properties: { prompt: { type: "STRING", description: "Full updated Meshy prompt including the requested changes." } },
+      required: ["prompt"],
+    },
+  },
+  {
+    name: "refine_current_model",
+    description: "Propose adding colour/texture detail to the current Meshy preview model (costs credits; needs confirmation).",
+  },
+  {
+    name: "confirm_pending_action",
+    description: "Call ONLY right after the user clearly says yes to the pending action's credit cost.",
+  },
+  { name: "cancel_pending_action", description: "Cancel the pending action when the user says no or changes their mind." },
+  {
+    name: "set_model_height",
+    description: "Scale the current model to a target height.",
+    parameters: {
+      type: "OBJECT",
+      properties: {
+        value: { type: "NUMBER", description: "Height value." },
+        unit: { type: "STRING", enum: ["mm", "cm", "in"], description: "Unit of the height." },
+      },
+      required: ["value", "unit"],
+    },
+  },
+  { name: "get_app_state", description: "Get the current project, model size, pending action, and credit balance." },
+  { name: "request_print", description: "The user wants to print the current model." },
+];
+
+export const MORPHIX_SYSTEM_INSTRUCTION = `You are Morphix, the friendly voice of an AI 3D printer on a Raspberry Pi touchscreen.
+Always speak English. Replies are spoken aloud: keep them to one or two short sentences.
+
+How you work:
+- When the user describes something to make, ask at most one short clarifying question if it is truly vague, otherwise call generate_model with a detailed prompt for Meshy.
+- Write Meshy prompts for a single solid printable object: describe shape, pose and style; include a flat stable base; avoid thin fragile parts, floating pieces and text.
+- generate_model and revise_model only PROPOSE the job. Tell the user the credit cost from the tool result and ask them to say yes or tap Confirm. Only call confirm_pending_action after they clearly say yes.
+- Never say a model is generating or ready unless a tool result or a [Morphix event] message says so.
+- When a model is ready, tell the user and ask how tall they want it. Use set_model_height for sizes like "six inches".
+- Printing is not available yet in this version. If asked to print, call request_print and relay its answer. Never claim to control the printer.
+- Messages that start with [Morphix event] come from the app, not the user. React to them briefly.`;
+
+/** Deterministic check that the user's own words were a clear "yes". */
+export function isAffirmative(utterance: string): boolean {
+  const t = utterance.toLowerCase();
+  if (/\b(no|nope|don'?t|do not|stop|cancel|wait|not (yet|now)|hold on|later|never|but|actually)\b/.test(t)) return false;
+  return /\b(yes|yeah|yep|yup|sure|ok|okay|confirm|confirmed|go ahead|do it|please do|make it|sounds good|let'?s do it|absolutely)\b/.test(t);
+}
+
+/** Converts spoken sizes to millimetres. */
+export function toMillimetres(value: number, unit: string): number {
+  const u = unit.toLowerCase();
+  if (u === "in" || u.startsWith("inch")) return value * 25.4;
+  if (u === "cm") return value * 10;
+  return value;
+}

@@ -2,32 +2,63 @@ import { useEffect, useState } from "react";
 import type { AppSettings, SystemInfo } from "@morphix/shared";
 import { api } from "../bridge";
 import { speakerTest } from "../audio";
+import { NetworkPanel } from "./Network";
 
 const KEY_LABELS: Record<keyof AppSettings["keys"], string> = {
   gemini: "Gemini", meshy: "Meshy", vultr: "Vultr", tiger: "Tiger Data", swarms: "Swarms", auth0: "Auth0",
 };
 
-export function SettingsPage({ settings }: { settings: AppSettings | null }) {
+export function SettingsPage({ settings, onError }: { settings: AppSettings | null; onError: (m: string) => void }) {
+  const [tab, setTab] = useState<"general" | "network">("general");
+  return (
+    <div className="page">
+      <div className="tabs">
+        <button className={tab === "general" ? "on" : ""} onClick={() => setTab("general")}>General</button>
+        <button className={tab === "network" ? "on" : ""} onClick={() => setTab("network")}>Network</button>
+      </div>
+      <div className="tab-body">{tab === "general" ? <General settings={settings} onError={onError} /> : <NetworkPanel onError={onError} />}</div>
+    </div>
+  );
+}
+
+function General({ settings, onError }: { settings: AppSettings | null; onError: (m: string) => void }) {
   const [sys, setSys] = useState<SystemInfo | null>(null);
   const [logs, setLogs] = useState<string[]>([]);
+  const [balance, setBalance] = useState<string>("–");
+  const [gemini, setGemini] = useState<string | null>(null);
 
   const refresh = () => {
     api.getSystemInfo().then(setSys);
     api.recentLogs(80).then(setLogs);
+    if (settings?.keys.meshy) api.meshyBalance().then((r) => setBalance("balance" in r ? `${r.balance} credits` : r.error));
   };
-  useEffect(refresh, []);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  useEffect(refresh, [settings?.keys.meshy]);
 
   const gb = (b: number) => `${(b / 1e9).toFixed(1)} GB`;
+  const ai = settings?.ai;
   return (
-    <div className="settings">
+    <div className="settings-grid">
       <div className="card">
-        <h3>Storage</h3>
-        <div className="stat"><span className="muted">Location</span><span className="small">{sys?.storageRoot ?? "–"}</span></div>
-        <div className="stat"><span className="muted">Free space</span><span>{sys ? `${gb(sys.freeBytes)} of ${gb(sys.totalBytes)}` : "–"}</span></div>
-        <div className="stat"><span className="muted">App version</span><span>{sys?.version ?? "–"} · {sys?.arch}</span></div>
+        <h3>AI</h3>
+        <div className="stat"><span className="muted">Voice</span><span>{ai?.assistant === "gemini-live" ? `Gemini Live · ${ai.geminiModel}` : "Demo"}</span></div>
+        <div className="stat"><span className="muted">3D models</span><span>{ai?.generator === "meshy" ? `Meshy · ${ai.meshyModel}` : "Demo shapes"}</span></div>
+        {ai?.generator === "meshy" && (
+          <>
+            <div className="stat"><span className="muted">Meshy credits</span><span>{balance}</span></div>
+            <div className="stat"><span className="muted">Cost</span><span>{ai.previewCredits} per model · {ai.refineCredits} to colour</span></div>
+            <div className="stat"><span className="muted">Today</span><span>{ai.usedToday} of {ai.dailyLimit} jobs</span></div>
+          </>
+        )}
+        {ai?.assistant === "gemini-live" && (
+          <div className="row" style={{ marginTop: 8 }}>
+            <button className="btn" style={{ minHeight: 44 }} onClick={() => { setGemini("Testing…"); void api.testGemini().then((r) => setGemini(r.message)); }}>Test Gemini</button>
+            {gemini && <span className="muted small">{gemini}</span>}
+          </div>
+        )}
       </div>
       <div className="card">
-        <h3>AI services</h3>
+        <h3>API keys</h3>
         {settings &&
           (Object.keys(KEY_LABELS) as (keyof AppSettings["keys"])[]).map((k) => (
             <div className="stat" key={k}>
@@ -35,20 +66,22 @@ export function SettingsPage({ settings }: { settings: AppSettings | null }) {
               <span style={{ color: settings.keys[k] ? "var(--ok)" : "var(--muted)" }}>{settings.keys[k] ? "Key present" : "Not configured"}</span>
             </div>
           ))}
-        <div className="muted small" style={{ marginTop: 6 }}>Keys go in {settings?.storageRoot}/config/morphix.env on the Pi. They never reach this screen.</div>
+        <div className="muted small" style={{ marginTop: 6 }}>Keys live in {settings?.storageRoot}/config/morphix.env on the Pi and never reach this screen.</div>
       </div>
       <div className="card">
-        <h3>Audio</h3>
-        <div className="row">
-          <button className="btn" onClick={() => void speakerTest()}>Test speaker</button>
-          <span className="muted small">Mic test: hold the button on the Create page, then play it back.</span>
+        <h3>Storage</h3>
+        <div className="stat"><span className="muted">Location</span><span className="small">{sys?.storageRoot ?? "–"}</span></div>
+        <div className="stat"><span className="muted">Free space</span><span>{sys ? `${gb(sys.freeBytes)} of ${gb(sys.totalBytes)}` : "–"}</span></div>
+        <div className="stat"><span className="muted">App version</span><span>{sys?.version ?? "–"} · {sys?.arch}</span></div>
+      </div>
+      <div className="card">
+        <h3>Audio & printer</h3>
+        <div className="row" style={{ marginBottom: 6 }}>
+          <button className="btn" style={{ minHeight: 44 }} onClick={() => void speakerTest().catch((e) => onError(String(e)))}>Test speaker</button>
+          <span className="muted small">Mic: hold the button, then ▶ Play recording.</span>
         </div>
-      </div>
-      <div className="card">
-        <h3>Printer</h3>
-        <div className="stat"><span className="muted">Address</span><span>{settings?.printerHost}</span></div>
-        <div className="stat"><span className="muted">Status poll</span><span>every {settings?.printerPollSeconds}s</span></div>
-        <div className="stat"><span className="muted">Print controls</span><span style={{ color: "var(--warn)" }}>Disabled (observation only)</span></div>
+        <div className="stat"><span className="muted">Printer</span><span>{settings?.printerHost} · every {settings?.printerPollSeconds}s</span></div>
+        <div className="stat"><span className="muted">Print controls</span><span style={{ color: "var(--warn)" }}>Disabled</span></div>
       </div>
       <div className="card" style={{ gridColumn: "1 / -1" }}>
         <div className="row" style={{ justifyContent: "space-between", marginBottom: 8 }}>
