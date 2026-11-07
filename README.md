@@ -1,51 +1,59 @@
-# 3D-AI-PRINT — QD330 control system
+# Morphix
 
-Control system for an **Afinia 3D QD330** printer connected to a Raspberry Pi over Ethernet.
-Pushing to `main` deploys to the Pi automatically (Pi Manager pulls every minute and runs `deploy.sh`).
+AI-powered, voice-controlled 3D printing on a Raspberry Pi 4 + Afinia QD330.
+Speak → Gemini understands → Meshy generates → preview → choose size → approve → print → AI monitors.
 
-## Network layout
-| Device | Address |
-|---|---|
-| Pi (`eth0`) | 192.168.10.1 |
-| QD330 printer | 192.168.10.51 (control: TCP 8899, camera: 8080) |
-| Dashboard | `http://<pi-wifi-ip>:8000` |
+**Current status: Phase 1 (local foundation) built.** AI runs in clearly labelled demo mode until
+`GEMINI_API_KEY` / `MESHY_API_KEY` are added in Phase 2. Printer access is observation-only.
+See [docs/PHASES.md](docs/PHASES.md) and [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
-## Web dashboard
-Live status (temps, progress, layer, position), camera stream and snapshot, home, pause / resume / cancel,
-nozzle and bed temperatures, fan, light, motors off, files stored on the printer (print any of them),
-upload `.gx` / `.g` files (optionally start printing), a raw G-code console, and a dance button.
-
-## Command line (on the Pi)
+## Repository
 ```
-qd330ctl status            qd330ctl files            qd330ctl home
-qd330ctl nozzle 210        qd330ctl bed 60           qd330ctl cooldown
-qd330ctl fan on|off        qd330ctl led on|off       qd330ctl motors-off
-qd330ctl pause|resume|cancel
-qd330ctl print "leaf_coaster (1).gx"
-qd330ctl upload part.gx --start
-qd330ctl snapshot cam.jpg
-qd330ctl gcode M115 M119
+apps/desktop/           Electron main + preload, React touchscreen UI (1024×600)
+packages/shared         IPC contract and shared types
+packages/domain         workflow state machine (approval and validation gates)
+packages/database       SQLite schema + persistence (sql.js, no native build)
+packages/storage        ~/Morphix layout, safe paths, atomic writes, logs
+packages/printer        QD330 observer (read-only command allowlist)
+packages/meshy          model generators (demo; Meshy in Phase 2)
+packages/gemini         assistants (demo; Gemini Live in Phase 2)
+packages/slicing        build-volume checks (slicing in Phase 3)
+services/qd330-dashboard  Python web dashboard + CLI for the printer (port 8000)
+services/vision         Phase 4 vision worker (planned)
+config/                 printer profile, slicer profiles, env example
+scripts/pi/             Pi build, launch and service install scripts
+tests/                  vitest suites
 ```
 
-## Python
-```python
-from printer_control import QD330
-p = QD330()            # 192.168.10.51
-p.status(); p.home(); p.upload("part.gx", open("part.gx", "rb").read(), start=True)
-```
+## On the Pi
+Pushing to `main` deploys automatically: Pi Manager pulls within a minute and runs `deploy.sh`, which
+installs Node 22 for `jd` if needed, installs dependencies when the lockfile changes, runs the tests,
+builds, and restarts Morphix if it is running. No sudo required.
 
-## Setup (once, on the Pi)
 ```
-sudo bash /home/jd/pi-manager/setup/install.sh
+systemctl --user start morphix      # open Morphix on the touchscreen
+systemctl --user stop morphix
+journalctl --user -u morphix -f     # app output
+ls ~/Morphix                        # models, previews, database, logs, ...
 ```
-Installs the `qd330-web` service and the `qd330ctl` command. Afterwards each push reloads the
-dashboard automatically (the service restarts itself when its code changes).
+API keys: copy `config/morphix.env.example` to `~/Morphix/config/morphix.env` and fill in values.
 
-Optional settings go in `/etc/qd330-web.env` (kept out of git): `QD330_HOST`, `QD330_WEB_PORT`,
-and `QD330_TOKEN` — set a token to require `?token=...` on the dashboard, since anyone on the
-Wi-Fi network can otherwise reach it.
+### QD330 dashboard
+`http://192.168.86.38:8000` — status, camera, files, job control (runs as the `qd330-web` user service).
+CLI: `qd330ctl status`. This dashboard predates Morphix and includes manual controls (home, temperatures,
+G-code console); Morphix itself only observes the printer until Phase 5.
+Set `QD330_TOKEN=...` in `~/.config/qd330-web.env` to require a token.
 
-## Notes
-- The printer ignores direct movement commands (G1) over the network; motion only happens
-  through G28 (home) or a print job — that is how the dance works.
-- Plain `.g` jobs can stall at 0%; slicer-made `.gx` files are the reliable format.
+## Development
+```
+npm install
+npm test
+npm run build
+MORPHIX_WINDOWED=1 MORPHIX_ROOT=/tmp/morphix npm start
+```
+`MORPHIX_SMOKE=1` runs a headless end-to-end check (prompt → demo model → stored → served) and exits.
+
+## Safety rules
+Never start a physical print without explicit approval · never claim a pause/stop without printer
+confirmation · no unverified printer commands from Morphix · the printer and its unauthenticated camera
+stay on the private Ethernet link · no keys in git.

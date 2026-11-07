@@ -1,11 +1,19 @@
 #!/bin/bash
-# Run by Pi Manager (as user jd) after every push to main.
+# Run by Pi Manager (as jd) after every push to main.
 set -euo pipefail
 cd "$(dirname "$0")"
-python3 -m py_compile printer_control/*.py
-if systemctl is-enabled --quiet qd330-web.service 2>/dev/null; then
-  # The web service restarts itself when its code changes; nothing else to do.
-  echo "qd330-web will reload the new code within a few seconds"
+export XDG_RUNTIME_DIR="/run/user/$(id -u)"
+export DBUS_SESSION_BUS_ADDRESS="unix:path=$XDG_RUNTIME_DIR/bus"
+
+echo "== QD330 dashboard"
+python3 -m py_compile services/qd330-dashboard/printer_control/*.py
+bash scripts/pi/install-user-services.sh
+
+echo "== Morphix"
+bash scripts/pi/build-morphix.sh
+if systemctl --user is-active --quiet morphix.service; then
+  systemctl --user restart morphix.service
+  echo "Morphix restarted with the new build"
 else
-  echo "qd330-web not installed yet. Run once on the Pi: sudo bash $(pwd)/setup/install.sh"
+  echo "Morphix built. Start it with: systemctl --user start morphix"
 fi
