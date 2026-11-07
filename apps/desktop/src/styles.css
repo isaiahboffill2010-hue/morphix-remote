@@ -100,6 +100,8 @@ button { font: inherit; color: inherit; touch-action: manipulation; }
 .side { display: flex; flex-direction: column; gap: 8px; overflow-y: auto; min-height: 0; }
 .stat { display: flex; justify-content: space-between; padding: 4px 0; border-bottom: 1px solid var(--line); font-variant-numeric: tabular-nums; }
 .stat:last-child { border-bottom: 0; }
+.stat > span:first-child { flex: none; margin-right: 14px; }
+.stat > span:last-child { text-align: right; min-width: 0; overflow-wrap: anywhere; }
 .size-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
 .size-grid .btn { min-height: 44px; padding: 0 8px; }
 

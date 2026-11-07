@@ -226,7 +226,7 @@ export interface MorphixApi {
   listProjects(): Promise<Project[]>;
   getProject(id: string): Promise<{ project: Project; versions: ModelVersion[] } | null>;
   createProjectFromPrompt(prompt: string): Promise<{ project: Project; taskId: string } | { pending: PendingAction }>;
-  setTargetHeight(versionId: string, heightMm: number): Promise<ModelVersion>;
+  setTargetHeight(versionId: string, heightMm: number | null): Promise<ModelVersion>;
   saveThumbnail(versionId: string, pngDataUrl: string): Promise<void>;
   onGenerationProgress(cb: (p: GenerationProgress) => void): () => void;
 

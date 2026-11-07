@@ -62,7 +62,7 @@ export function createMockApi(): MorphixApi {
       }, 400);
       return { project: p, taskId };
     },
-    setTargetHeight: async (vid, h) => {
+    setTargetHeight: async (vid, h: number | null) => {
       const v = versions.find((x) => x.id === vid)!;
       v.targetHeightMm = h;
       return v;

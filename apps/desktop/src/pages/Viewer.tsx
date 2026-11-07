@@ -65,12 +65,10 @@ export function ViewerPage({ projectId, settings, heightEvent, onBrowse, onPrepa
 
   const setTarget = async (mm: number | null) => {
     setHeight(mm);
-    if (mm) {
-      try {
-        await api.setTargetHeight(v.id, Math.round(mm * 10) / 10);
-      } catch (e) {
-        onError((e as Error).message);
-      }
+    try {
+      await api.setTargetHeight(v.id, mm ? Math.round(mm * 10) / 10 : null);
+    } catch (e) {
+      onError((e as Error).message);
     }
   };
   const nudge = (d: number) => setTarget(Math.max(5, Math.round(((height ?? size?.scaled.z ?? 50) + d) * 10) / 10));

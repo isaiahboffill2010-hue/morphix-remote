@@ -246,9 +246,10 @@ function registerIpc(): void {
       throw new Error(friendly(e));
     }
   });
-  handle(IPC.setTargetHeight, (versionId: string, heightMm: number) => {
-    const h = Number(heightMm);
-    if (!(h > 0 && h <= 1000)) throw new Error("height must be between 0 and 1000 mm");
+  handle(IPC.setTargetHeight, (versionId: string, heightMm: number | null) => {
+    // null / 0 = original size
+    const h = heightMm == null || Number(heightMm) === 0 ? null : Number(heightMm);
+    if (h !== null && !(h > 0 && h <= 1000)) throw new Error("height must be between 0 and 1000 mm");
     db.run("UPDATE model_versions SET target_height_mm = ? WHERE id = ?", [h, safeId(versionId)]);
     const r = db.get("SELECT * FROM model_versions WHERE id = ?", [versionId]);
     if (!r) throw new Error("model not found");
@@ -531,7 +532,7 @@ app.whenReady().then(async () => {
   ctx.db.backup();
   setInterval(() => ctx.db.backup(), 24 * 3600 * 1000);
   log.write("info", "Morphix starting", {
-    storage: storage.root, printer: PRINTER_HOST, assistant: voice.enabled ? GEMINI_MODEL : "demo",
+    storage: storage.root, printer: PRINTER_HOST, assistant: voice.enabled ? GEMINI_MODEL : "missing",
     generator: meshy ? MESHY_MODEL : "missing", resumable: resumable.length,
     printControls: PRINT_CONTROLS, gxVerified: GX_VERIFIED,
   });
