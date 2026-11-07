@@ -1,28 +1,13 @@
 // QD330 adapter — OBSERVATION ONLY (Phase 1).
 // Talks to TCP 8899 ("~CMD\r\n" ... "ok"). Only the read-only commands in
 // READ_ONLY_COMMANDS can be sent; everything else is rejected before it reaches
-// the socket. Motion, temperature, upload and job commands arrive in Phase 5
-// after each has been validated with the operator present.
+// the socket. Phase 5 job control (upload/start/pause/resume/cancel) lives in
+// control.ts behind QD330Controller, which is disabled by default.
 import { Socket } from "node:net";
 import type { PrinterInfo, PrinterStatus } from "@morphix/shared";
+import { assertReadOnly, cleanReply, parseInfo, parseStatus } from "./protocol";
 
-export const READ_ONLY_COMMANDS = new Set([
-  "M601 S1", // take the session (required before queries; no physical effect)
-  "M602", // release the session
-  "M115", // machine info
-  "M119", // machine status / endstops
-  "M105", // temperatures
-  "M114", // position
-  "M27", // job progress
-]);
-
-export class PrinterCommandRejected extends Error {}
-
-export function assertReadOnly(cmd: string): void {
-  if (!READ_ONLY_COMMANDS.has(cmd.trim())) {
-    throw new PrinterCommandRejected(`command not allowed in observation mode: ${cmd}`);
-  }
-}
+export { READ_ONLY_COMMANDS, PrinterCommandRejected, assertReadOnly, cleanReply, parseStatus, parseInfo } from "./protocol";
 
 export interface PrinterTransport {
   query(cmds: string[]): Promise<Record<string, string>>;
@@ -75,57 +60,6 @@ export class TcpTransport implements PrinterTransport {
   }
 }
 
-export function cleanReply(raw: string): string {
-  return raw
-    .replace(/\r/g, "")
-    .split("\n")
-    .filter((l) => l.trim() && !l.startsWith("CMD ") && l.trim() !== "ok")
-    .join("\n");
-}
-
-function kv(text: string): Record<string, string> {
-  const out: Record<string, string> = {};
-  for (const line of text.split("\n")) {
-    const idx = line.indexOf(":");
-    if (idx > 0) out[line.slice(0, idx).trim()] = line.slice(idx + 1).trim();
-  }
-  return out;
-}
-
-export function parseStatus(r: Record<string, string>): PrinterStatus {
-  const st = kv(r["M119"] ?? "");
-  const temps: PrinterStatus["temps"] = {};
-  for (const m of (r["M105"] ?? "").matchAll(/(T0|B):\s*([\d.]+)\s*\/\s*([\d.]+)/g)) {
-    temps[m[1] === "T0" ? "nozzle" : "bed"] = { current: Number(m[2]), target: Number(m[3]) };
-  }
-  const position: Record<string, number> = {};
-  for (const m of (r["M114"] ?? "").matchAll(/([XYZ]):\s*(-?[\d.]+)/g)) position[m[1].toLowerCase()] = Number(m[2]);
-  const prog = /byte\s+(\d+)\s*\/\s*(\d+)/.exec(r["M27"] ?? "");
-  const layer = /Layer:\s*(\d+)\s*\/\s*(\d+)/.exec(r["M27"] ?? "");
-  return {
-    online: true,
-    checkedAt: new Date().toISOString(),
-    machine: st["MachineStatus"],
-    moveMode: st["MoveMode"],
-    currentFile: st["CurrentFile"] || undefined,
-    temps,
-    position,
-    progress: prog ? Math.floor((Number(prog[1]) * 100) / Math.max(Number(prog[2]), 1)) : 0,
-    layer: layer ? [Number(layer[1]), Number(layer[2])] : [0, 0],
-  };
-}
-
-export function parseInfo(text: string): PrinterInfo {
-  const k = kv(text);
-  return {
-    machineType: k["Machine Type"],
-    machineName: k["Machine Name"],
-    firmware: k["Firmware"],
-    serial: k["SN"],
-    buildVolume: k["X"] ? `X: ${k["X"]}` : undefined,
-  };
-}
-
 /** Polls the printer and reports status changes. Never sends control commands. */
 export class PrinterObserver {
   private timer: NodeJS.Timeout | null = null;
@@ -170,3 +104,11 @@ export class PrinterObserver {
     this.timer = null;
   }
 }
+
+// Phase 5: printer control (disabled by default), approval tokens, job tracking, fake printer.
+export * from "./protocol";
+export * from "./names";
+export * from "./auth";
+export * from "./control";
+export * from "./tracker";
+export * from "./fake-server";
