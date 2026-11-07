@@ -146,6 +146,7 @@ export function App() {
 
   const showNotice = useCallback((message: string, level = "error", code?: string, hint?: string) => {
     const f = code ? { code, title: message, hint } : friendlyError(message);
+    if (level === "error") api.log("warn", `notice shown: ${f.code ?? ""} ${f.title}`);
     setNotice({ ...f, level });
     setTimeout(() => setNotice(null), 8000);
   }, []);

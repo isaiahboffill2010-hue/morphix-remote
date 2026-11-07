@@ -13,6 +13,8 @@ import type { Printing } from "./printing";
 import { formatDuration } from "./printing";
 
 interface Turn {
+  startedAt: number;
+  audioBytes: number;
   user: string;
   assistant: string;
   audioRel: string | null;
@@ -33,6 +35,7 @@ export class VoiceController {
     if (opts.apiKey) {
       this.live = new GeminiLive(opts.apiKey, opts.model, MORPHIX_SYSTEM_INSTRUCTION, MORPHIX_TOOLS, {
         onAudio: (pcm) => {
+          if (this.turn) this.turn.audioBytes += pcm.length;
           this.emit({ type: "status", state: "speaking" });
           const ab = pcm.buffer.slice(pcm.byteOffset, pcm.byteOffset + pcm.byteLength);
           this.emit({ type: "audio", pcm: ab as ArrayBuffer, sampleRate: 24000 });
@@ -44,7 +47,7 @@ export class VoiceController {
           }
         },
         onAssistantText: (t) => {
-          if (!this.turn) this.turn = { user: "", assistant: "", audioRel: null, system: true };
+          if (!this.turn) this.turn = { startedAt: Date.now(), audioBytes: 0, user: "", assistant: "", audioRel: null, system: true };
           this.turn.assistant += t;
           this.emit({ type: "assistant-text", text: this.turn.assistant });
         },
@@ -64,6 +67,7 @@ export class VoiceController {
   }
 
   private emit(e: VoiceEvent): void {
+    if (e.type === "error") this.ctx.log.write("warn", "voice error shown", { message: e.message });
     this.ctx.send(IPC.voiceEvent, e);
   }
 
@@ -87,12 +91,14 @@ export class VoiceController {
   /** One push-to-talk utterance (16 kHz PCM16). */
   async utterance(pcm: Buffer, audioRel: string | null): Promise<void> {
     const { rms, peak, seconds } = speechStats(pcm, 16000);
+    this.ctx.log.write("info", "voice turn", { seconds: Math.round(seconds * 10) / 10, rms: Math.round(rms * 1000) / 1000, peak: Math.round(peak * 100) / 100 });
     if (seconds < 0.4 || (rms < 0.006 && peak < 0.04)) {
+      this.ctx.log.write("warn", "voice turn too quiet", { seconds, rms, peak });
       this.emit({ type: "error", message: "I didn't catch that. Hold the button and speak a little closer to the mic." });
       return;
     }
     const live = await this.connect();
-    this.turn = { user: "", assistant: "", audioRel, system: false };
+    this.turn = { startedAt: Date.now(), audioBytes: 0, user: "", assistant: "", audioRel, system: false };
     this.emit({ type: "status", state: "thinking" });
     live.sendUtterance(pcm);
   }
@@ -101,7 +107,7 @@ export class VoiceController {
     const t = text.trim().slice(0, 500);
     if (!t) return;
     const live = await this.connect();
-    this.turn = { user: t, assistant: "", audioRel: null, system: false };
+    this.turn = { startedAt: Date.now(), audioBytes: 0, user: t, assistant: "", audioRel: null, system: false };
     this.emit({ type: "user-text", text: t });
     this.emit({ type: "status", state: "thinking" });
     live.sendText(t);
@@ -110,7 +116,7 @@ export class VoiceController {
   /** Tell Gemini about something the app did (it reacts out loud). */
   async notify(message: string): Promise<void> {
     if (!this.live?.connected) return;
-    this.turn = { user: "", assistant: "", audioRel: null, system: true };
+    this.turn = { startedAt: Date.now(), audioBytes: 0, user: "", assistant: "", audioRel: null, system: true };
     try {
       this.live.sendText(`[Morphix event] ${message}`);
     } catch (e) {
@@ -123,6 +129,10 @@ export class VoiceController {
     this.turn = null;
     this.emit({ type: "status", state: "idle" });
     if (!turn) return;
+    this.ctx.log.write("info", "voice reply", {
+      system: turn.system, heard: turn.user.slice(0, 120), said: turn.assistant.slice(0, 160),
+      replyAudioSeconds: Math.round((turn.audioBytes / 48000) * 10) / 10, ms: Date.now() - turn.startedAt,
+    });
     const save = (role: "user" | "assistant", text: string, audioRel: string | null): AssistantTurn | null => {
       if (!text.trim()) return null;
       const row = { id: randomUUID(), role, text: text.trim(), createdAt: now() };

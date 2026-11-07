@@ -47,8 +47,19 @@ export class GeminiLive {
   }
 
   /** Opens (or reuses) the session; resumes context after a dropped connection. */
-  ensureConnected(timeoutMs = 12000): Promise<void> {
+  async ensureConnected(timeoutMs = 12000): Promise<void> {
     if (this.connected && this.ready) return this.ready;
+    try {
+      await this.open(timeoutMs);
+    } catch (e) {
+      if (!this.resumeHandle) throw e;
+      // The old session can't be resumed (e.g. closed for inactivity): start a fresh one.
+      this.resumeHandle = null;
+      await this.open(timeoutMs);
+    }
+  }
+
+  private open(timeoutMs: number): Promise<void> {
     this.ready = new Promise<void>((resolve, reject) => {
       const ws = new WebSocket(`${WS_URL}?key=${encodeURIComponent(this.apiKey)}`);
       this.ws = ws;
