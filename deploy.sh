@@ -9,6 +9,9 @@ echo "== QD330 dashboard"
 python3 -m py_compile services/qd330-dashboard/printer_control/*.py
 bash scripts/pi/install-user-services.sh
 
+echo "== Fonts"
+bash scripts/pi/ensure-fonts.sh || echo "WARNING: could not install the emoji font"
+
 echo "== Guardian (Python/OpenCV)"
 bash scripts/pi/ensure-vision.sh || echo "WARNING: guardian Python setup failed; monitoring will report the worker as down"
 

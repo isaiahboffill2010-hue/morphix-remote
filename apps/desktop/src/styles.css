@@ -48,7 +48,7 @@
 html, body, #root { height: 100%; margin: 0; }
 body {
   background: var(--bg); color: var(--text); overflow: hidden;
-  font: 17px/1.4 "Nunito", "Quicksand", system-ui, -apple-system, "Segoe UI", Roboto, "Noto Sans", sans-serif;
+  font: 17px/1.4 "Nunito", "Quicksand", system-ui, -apple-system, "Segoe UI", Roboto, "Noto Sans", sans-serif, "Noto Color Emoji", "Apple Color Emoji", "Segoe UI Emoji";
   user-select: none;
 }
 button { font: inherit; color: inherit; touch-action: manipulation; }
