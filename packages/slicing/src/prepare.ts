@@ -248,7 +248,7 @@ export async function preparePrint(input: PreparePrintInput): Promise<PreparePri
     infillPercent: o.infillPercent,
     brimWidthMm: o.brimWidthMm,
     perimeters: o.perimeters,
-    centerMm: { x: volume.x / 2, y: volume.y / 2 },
+    centerMm: { x: 0, y: 0 }, // QD330 bed is centre-origin (-110..110)
     profilesDir: o.profilesDir,
     timeoutMs: o.sliceTimeoutMs,
     exec: o.exec,

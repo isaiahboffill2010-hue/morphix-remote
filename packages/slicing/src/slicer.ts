@@ -113,7 +113,7 @@ export interface SliceOptions {
   brimWidthMm?: number;
   /** Perimeters / wall loops. Omitted: the profile's value (2). */
   perimeters?: number;
-  /** Plate centre for PrusaSlicer --center (default 110,110). */
+  /** Plate centre for PrusaSlicer --center (default 0,0: the QD330 bed is centre-origin, -110..110). */
   centerMm?: { x: number; y: number };
   profilesDir?: string;
   timeoutMs?: number;
@@ -183,7 +183,7 @@ export async function sliceStl(opts: SliceOptions): Promise<SliceResult> {
       infillPercent: opts.infillPercent,
       brimWidthMm: opts.brimWidthMm,
       perimeters: opts.perimeters,
-      center: opts.centerMm ?? { x: QD330_PLA_DEFAULTS.buildVolumeMm.x / 2, y: QD330_PLA_DEFAULTS.buildVolumeMm.y / 2 },
+      center: opts.centerMm ?? { x: 0, y: 0 },
     });
   } else {
     const processJson = await orcaProcessFile(profiles, outDir, supports, opts.layerHeightMm, opts.infillPercent, opts);

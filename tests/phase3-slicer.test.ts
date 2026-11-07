@@ -43,7 +43,7 @@ describe("slicer profiles (UNVERIFIED)", () => {
     expect(ini.layer_height).toBe(String(QD330_PLA_DEFAULTS.layerHeightMm));
     expect(ini.fill_density).toBe(`${QD330_PLA_DEFAULTS.infillPercent}%`);
     expect(ini.perimeters).toBe(String(QD330_PLA_DEFAULTS.perimeters));
-    expect(ini.bed_shape).toBe("0x0,220x0,220x220,0x220");
+    expect(ini.bed_shape).toBe("-110x-110,110x-110,110x110,-110x110");
     expect(ini.max_print_height).toBe("220");
     expect(await readFile(p.prusaIni, "utf8")).toMatch(/UNVERIFIED/);
     for (const f of [p.orcaMachine, p.orcaProcess, p.orcaFilament]) expect(JSON.parse(await readFile(f, "utf8"))._comment).toMatch(/UNVERIFIED/);
@@ -104,7 +104,7 @@ describe("sliceStl", () => {
     expect(calls[0].file).toBe(PRUSA.path);
     expect(calls[0].args).toEqual([
       "--export-gcode", "--load", join(PROFILES, "qd330-pla-0.2mm.ini"), "--output", join(out, "morphix.gcode"),
-      "--center", "110,110", "--support-material", "--support-material-auto", stl,
+      "--center", "0,0", "--support-material", "--support-material-auto", stl,
     ]);
     expect(r.gcodePath).toBe(join(out, "morphix.gcode"));
     expect(r.estimates.printTimeS).toBe(3723);
