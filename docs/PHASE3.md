@@ -44,9 +44,19 @@ result with a `reason`.
 
 ### Pipeline
 
-1. **Load**: STL (binary/ASCII) or GLB. GLB is converted from glTF Y-up to printer Z-up,
-   `(x, y, z) → (x, −z, y)`, and multiplied by `glbUnitScaleMm` (default 1000 = metres).
-   Meshy units are *not* reliable, so pass `targetHeightMm`.
+1. **Load and normalise up axis** (`result.upAxis`). The input is STL (binary or ASCII) or GLB.
+   A GLB is converted from glTF Y-up to printer Z-up, `(x, y, z) → (x, −z, y)`, and multiplied
+   by `glbUnitScaleMm` (default 1000 = metres). Meshy units are *not* reliable, so pass
+   `targetHeightMm`; the Phase 2 default display height is 80 mm.
+   Meshy now also stores `model.stl`, and **its up axis is unverified**. With `upAxis: "auto"`
+   (the default), an STL is checked with `detectUpAxis`:
+   - If `options.referenceGlb` is given, or a same-named `.glb` sits next to the STL (Meshy's
+     `model.glb`), the STL's bounding-box proportions are matched against the GLB's. This is
+     scale-independent, and `method` is `"reference"`.
+   - Otherwise it compares the flat-base area at the bottom of Z with the bottom of Y, and
+     reports Y-up only on strong evidence (`"heuristic"`).
+   - If neither gives evidence, it assumes Z-up (`"default"`) and adds a warning.
+   Pass `upAxis: "z"` or `"y"` to force the interpretation for either format.
 2. **Validate** (`report.input`).
 3. **Repair** (`repair`). Can be turned off with `repair: false`, or tuned by passing a `RepairOptions` object.
 4. **Scale**: the Z extent becomes `targetHeightMm`. This happens *before* orientation, so the
@@ -75,13 +85,14 @@ helpers `checkBuildVolume`, `stlSize` and `scaledCheck` are unchanged.
 | `topology.ts` | `weldVertices`, `edgeStats`, `findShells`, `degenerateTriangles` |
 | `validate.ts` | `validateMesh(mesh)` → `ValidationReport` |
 | `repair.ts` | `repairMesh(mesh, opts)` → `{ mesh, summary: RepairSummary }` |
+| `upaxis.ts` | `detectUpAxis(mesh, reference?)`, `yUpToZUp`, `normalizeUpAxis` |
 | `place.ts` | `scaleToHeight`, `placeOnPlate`, `checkFit`, `autoOrient`, `applyOrientation`, `DEFAULT_BUILD_VOLUME` |
 | `gcode.ts` | `analyzeGcode(text)` → `GcodeEstimates`, `extractLayers(text, opts)` → `Layer[]`, `parseDuration` |
 | `thumbnail.ts` | `renderThumbnail`, `gxThumbnailBmp`, `encodeBmp24`, `decodeBmp24` |
 | `gx.ts` | `writeGx`, `readGx`, `validateGx`, `compareGxHeaders`, `isGx`, `GX_LAYOUT_VERIFIED` (= false) |
 | `profiles.ts` | `QD330_PLA_DEFAULTS`, `resolveProfilePaths`, `parsePrusaIni` |
 | `slicer.ts` | `detectSlicers`, `sliceStl`, `prusaArgs`, `parseSlicerVersion`, `ExecFileFn` |
-| `prepare.ts` | `preparePrint`, `loadMesh`, `gxFromGcode`, `heuristicEstimates` |
+| `prepare.ts` | `preparePrint`, `loadMesh` (returns Z-up mesh + `upAxis`), `gxFromGcode`, `heuristicEstimates` |
 
 ### Validation report (`validateMesh`)
 
@@ -195,6 +206,7 @@ match, and **job** fields (time, filament, temperatures), which differ per print
 | Item | Status |
 |---|---|
 | STL read/write, GLB geometry read, Y-up → Z-up | Verified by unit tests (synthetic files) |
+| Up axis of Meshy's `model.stl` | **UNVERIFIED** — detected automatically (sibling GLB proportions, then a flat-base heuristic). Check `result.upAxis` on the first real Meshy job |
 | Validation, repair, scaling, placement, fit check, orientation heuristic | Verified by unit tests (synthetic meshes); **not yet run on real Meshy output** |
 | `.gx` writer/reader round-trip and the community byte layout | Verified by unit tests against the documented layout |
 | `.gx` layout matching **Afinia** QD330 output | **UNVERIFIED** — no official Afinia `.gx` has been compared yet |

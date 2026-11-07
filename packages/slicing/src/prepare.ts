@@ -4,7 +4,8 @@
 // locally installed slicer (execFile, no shell).
 import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { extname, join } from "node:path";
+import { existsSync } from "node:fs";
+import { basename, dirname, extname, join } from "node:path";
 import { isGlb, parseGlb } from "./glb";
 import { analyzeGcode, type GcodeEstimates } from "./gcode";
 import { GX_LAYOUT_VERIFIED, validateGx, writeGx, type GxValidation } from "./gx";
@@ -15,6 +16,7 @@ import { repairMesh, type RepairOptions, type RepairSummary } from "./repair";
 import { sliceStl, type DetectOptions, type ExecFileFn, type SlicerInfo, type SliceResult, type SupportMode } from "./slicer";
 import { MeshFormatError, parseStl, writeBinaryStl } from "./stl";
 import { gxThumbnailBmp } from "./thumbnail";
+import { detectUpAxis, normalizeUpAxis, type UpAxisDetection } from "./upaxis";
 import { validateMesh, type ValidationReport } from "./validate";
 
 export type MeshFormat = "stl" | "glb";
@@ -32,6 +34,14 @@ export interface PreparePrintOptions {
   buildVolume?: BuildVolume;
   /** For GLB: glTF unit -> mm factor before height scaling (default 1000). */
   glbUnitScaleMm?: number;
+  /**
+   * Source up axis. "auto" (default): GLB is treated as Y-up (glTF spec); STL is detected
+   * with detectUpAxis, using `referenceGlb` (or a same-named .glb next to the STL) when
+   * available. "z"/"y" force the interpretation for either format.
+   */
+  upAxis?: "auto" | "z" | "y";
+  /** Z-up reference for STL up-axis detection: path or bytes of the same model's GLB. */
+  referenceGlb?: string | Uint8Array;
   /** false = stop after the mesh stages (no slicer is run). Default true. */
   slice?: boolean;
   /** Use this slicer, or "none" to skip detection. Default: auto-detect. */
@@ -76,6 +86,8 @@ export interface PreparePrintResult {
   /** True when a .gx was produced. It is still UNVERIFIED and must not be sent to the printer yet. */
   ok: boolean;
   format: MeshFormat;
+  /** How the source up axis was decided (the mesh is always converted to Z-up). */
+  upAxis: UpAxisDetection;
   report: { input: ValidationReport; final: ValidationReport };
   repair: RepairSummary | null;
   /** Uniform scale applied after unit conversion (1 when no target height). */
@@ -96,8 +108,14 @@ export interface PreparePrintResult {
   warnings: string[];
 }
 
-/** Loads a mesh from path or buffer. Throws MeshFormatError on unreadable input. */
-export async function loadMesh(input: Pick<PreparePrintInput, "inputPath" | "buffer" | "format">, glbUnitScaleMm?: number): Promise<{ mesh: Mesh; format: MeshFormat; warnings: string[] }> {
+/**
+ * Loads a mesh from path or buffer and normalises it to printer Z-up (mm for STL; glTF
+ * units x glbUnitScaleMm for GLB). Throws MeshFormatError on unreadable input.
+ */
+export async function loadMesh(
+  input: Pick<PreparePrintInput, "inputPath" | "buffer" | "format">,
+  opts: Pick<PreparePrintOptions, "glbUnitScaleMm" | "upAxis" | "referenceGlb"> = {},
+): Promise<{ mesh: Mesh; format: MeshFormat; upAxis: UpAxisDetection; warnings: string[] }> {
   let buf: Uint8Array;
   let format = input.format;
   if (input.buffer) buf = input.buffer;
@@ -108,12 +126,34 @@ export async function loadMesh(input: Pick<PreparePrintInput, "inputPath" | "buf
   } else throw new MeshFormatError("preparePrint needs inputPath or buffer");
   if (!format) format = isGlb(buf) ? "glb" : "stl";
   const warnings: string[] = [];
+  const forced = opts.upAxis && opts.upAxis !== "auto" ? opts.upAxis : null;
   if (format === "glb") {
-    const r = parseGlb(buf, { unitScaleMm: glbUnitScaleMm });
+    const axis = forced ?? "y";
+    const r = parseGlb(buf, { unitScaleMm: opts.glbUnitScaleMm, zUp: axis === "y" });
     for (const s of r.skippedPrimitives) warnings.push(`GLB mesh ${s.mesh} primitive ${s.primitive} skipped: ${s.reason}`);
-    return { mesh: r.mesh, format, warnings };
+    const upAxis: UpAxisDetection = forced
+      ? { axis, method: "default", reason: `forced by options.upAxis = "${axis}"` }
+      : { axis, method: "default", reason: "glTF is Y-up by specification" };
+    return { mesh: r.mesh, format, upAxis, warnings };
   }
-  return { mesh: parseStl(buf), format, warnings };
+  const raw = parseStl(buf);
+  if (forced) return { mesh: normalizeUpAxis(raw, forced), format, upAxis: { axis: forced, method: "default", reason: `forced by options.upAxis = "${forced}"` }, warnings };
+  let reference: Mesh | undefined;
+  let refSource = opts.referenceGlb;
+  if (!refSource && input.inputPath) {
+    const sibling = join(dirname(input.inputPath), `${basename(input.inputPath, extname(input.inputPath))}.glb`);
+    if (existsSync(sibling)) refSource = sibling;
+  }
+  if (refSource) {
+    try {
+      reference = parseGlb(typeof refSource === "string" ? await readFile(refSource) : refSource).mesh;
+    } catch (e) {
+      warnings.push(`reference GLB ignored: ${(e as Error).message}`);
+    }
+  }
+  const upAxis = detectUpAxis(raw, reference);
+  if (upAxis.method === "default") warnings.push(`STL up axis unknown: ${upAxis.reason}`);
+  return { mesh: normalizeUpAxis(raw, upAxis.axis), format, upAxis, warnings };
 }
 
 export async function preparePrint(input: PreparePrintInput): Promise<PreparePrintResult> {
@@ -122,7 +162,7 @@ export async function preparePrint(input: PreparePrintInput): Promise<PreparePri
   const volume = o.buildVolume ?? DEFAULT_BUILD_VOLUME;
 
   progress("load");
-  const loaded = await loadMesh(input, o.glbUnitScaleMm);
+  const loaded = await loadMesh(input, o);
   const warnings = [...loaded.warnings];
   let mesh = loaded.mesh;
 
@@ -165,6 +205,7 @@ export async function preparePrint(input: PreparePrintInput): Promise<PreparePri
   const result: PreparePrintResult = {
     ok: false,
     format: loaded.format,
+    upAxis: loaded.upAxis,
     report: { input: inputReport, final: finalReport },
     repair,
     scale,

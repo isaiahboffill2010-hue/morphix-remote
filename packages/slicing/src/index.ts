@@ -13,6 +13,7 @@ export * from "./topology";
 export * from "./validate";
 export * from "./repair";
 export * from "./place";
+export * from "./upaxis";
 export * from "./gcode";
 export * from "./thumbnail";
 export * from "./gx";
