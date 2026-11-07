@@ -6,6 +6,7 @@ import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 import { STLLoader } from "three/examples/jsm/loaders/STLLoader.js";
 import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
 import { QD330_BUILD_VOLUME_MM as VOL } from "@morphix/shared";
+import { useTheme } from "../theme";
 
 export interface ModelSize {
   x: number;
@@ -26,6 +27,7 @@ interface Props {
 
 export function ModelViewer({ url, format, targetHeightMm, onMeasured, onError, onThumbnail }: Props) {
   const wrapRef = useRef<HTMLDivElement>(null);
+  const dark = useTheme().resolved === "dark";
   const state = useRef<{
     renderer: THREE.WebGLRenderer;
     scene: THREE.Scene;
@@ -55,7 +57,7 @@ export function ModelViewer({ url, format, targetHeightMm, onMeasured, onError, 
     const camera = new THREE.PerspectiveCamera(40, 1, 1, 5000);
     camera.position.set(260, 220, 300);
 
-    scene.add(new THREE.HemisphereLight(0xffffff, 0x9a8fc0, 1.5));
+    scene.add(new THREE.HemisphereLight(0xffffff, dark ? 0x3a3168 : 0x9a8fc0, 1.5));
     const sun = new THREE.DirectionalLight(0xffffff, 1.6);
     sun.position.set(200, 400, 250);
     scene.add(sun);
@@ -63,16 +65,16 @@ export function ModelViewer({ url, format, targetHeightMm, onMeasured, onError, 
     // Build plate and build volume (QD330 as reported by firmware)
     const plate = new THREE.Mesh(
       new THREE.PlaneGeometry(VOL.x, VOL.y),
-      new THREE.MeshBasicMaterial({ color: 0xece6ff, transparent: true, opacity: 0.95 }),
+      new THREE.MeshBasicMaterial({ color: dark ? 0x2a2350 : 0xece6ff, transparent: true, opacity: 0.95 }),
     );
     plate.rotation.x = -Math.PI / 2;
     scene.add(plate);
-    const grid = new THREE.GridHelper(VOL.x, 22, 0xb7a8f0, 0xd6cdf7);
+    const grid = new THREE.GridHelper(VOL.x, 22, dark ? 0x6a5bb8 : 0xb7a8f0, dark ? 0x3e3478 : 0xd6cdf7);
     grid.position.y = 0.05;
     scene.add(grid);
     const box = new THREE.LineSegments(
       new THREE.EdgesGeometry(new THREE.BoxGeometry(VOL.x, VOL.z, VOL.y)),
-      new THREE.LineBasicMaterial({ color: 0x6c4cf0, transparent: true, opacity: 0.35 }),
+      new THREE.LineBasicMaterial({ color: dark ? 0xa08bff : 0x6c4cf0, transparent: true, opacity: dark ? 0.5 : 0.35 }),
     );
     box.position.y = VOL.z / 2;
     scene.add(box);

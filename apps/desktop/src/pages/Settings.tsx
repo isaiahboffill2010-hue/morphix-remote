@@ -3,6 +3,7 @@ import type { AppSettings, SystemInfo } from "@morphix/shared";
 import { api } from "../bridge";
 import { speakerTest } from "../audio";
 import { NetworkPanel } from "./Network";
+import { useTheme, type ThemeChoice } from "../theme";
 
 const KEY_LABELS: Record<keyof AppSettings["keys"], string> = {
   gemini: "Gemini", meshy: "Meshy", vultr: "Vultr", tiger: "Tiger Data", swarms: "Swarms", auth0: "Auth0",
@@ -37,8 +38,18 @@ function General({ settings, onError }: { settings: AppSettings | null; onError:
 
   const gb = (b: number) => `${(b / 1e9).toFixed(1)} GB`;
   const ai = settings?.ai;
+  const theme = useTheme();
+  const THEMES: [ThemeChoice, string][] = [["auto", "🌗 Auto"], ["light", "☀️ Light"], ["dark", "🌙 Dark"]];
   return (
     <div className="settings-grid">
+      <div className="card" style={{ gridColumn: "1 / -1" }}>
+        <h3>Look</h3>
+        <div className="seg">
+          {THEMES.map(([c, label]) => (
+            <button key={c} className={theme.choice === c ? "on" : ""} onClick={() => theme.set(c)}>{label}</button>
+          ))}
+        </div>
+      </div>
       <div className="card">
         <h3>AI</h3>
         <div className="stat"><span className="muted">Voice</span><span>{ai?.assistant === "gemini-live" ? `Gemini Live · ${ai.geminiModel}` : "Demo"}</span></div>

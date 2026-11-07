@@ -4,6 +4,7 @@ import { MM_PER_INCH, fitsBuildVolume } from "@morphix/domain";
 import { QD330_BUILD_VOLUME_MM } from "@morphix/shared";
 import { api } from "../bridge";
 import { ModelViewer, type ModelSize } from "../components/ModelViewer";
+import { useTheme } from "../theme";
 
 const PRESETS: [string, number][] = [["Tiny · 2 in", 2 * MM_PER_INCH], ["Small · 3 in", 3 * MM_PER_INCH], ["Medium · 4 in", 4 * MM_PER_INCH], ["Big · 6 in", 6 * MM_PER_INCH]];
 const KIND_LABEL: Record<ModelVersion["kind"], string> = { demo: "Demo", preview: "Shape", refine: "Colour" };
@@ -22,6 +23,7 @@ export function ViewerPage({ projectId, settings, heightEvent, onBrowse, onPrepa
   const [versionId, setVersionId] = useState<string | null>(null);
   const [height, setHeight] = useState<number | null>(null);
   const [size, setSize] = useState<{ native: ModelSize; scaled: ModelSize } | null>(null);
+  const theme = useTheme().resolved;
 
   const load = (keepVersion = false) => {
     if (!projectId) return;
@@ -80,7 +82,7 @@ export function ViewerPage({ projectId, settings, heightEvent, onBrowse, onPrepa
     <div className="viewer">
       <div style={{ position: "relative", minHeight: 0, display: "grid" }}>
         <ModelViewer
-          key={v.id}
+          key={`${v.id}-${theme}`}
           url={v.url}
           format={v.format}
           targetHeightMm={height}

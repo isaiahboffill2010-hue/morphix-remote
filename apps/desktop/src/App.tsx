@@ -3,6 +3,7 @@ import type { AppSettings, AssistantTurn, PendingAction, PrinterStatus, VoiceEve
 import { api } from "./bridge";
 import { AudioOut, PushToTalk } from "./audio";
 import { installDragScroll } from "./dragScroll";
+import { useTheme } from "./theme";
 import { AssistantPage } from "./pages/Assistant";
 import { LibraryPage } from "./pages/Library";
 import { ViewerPage } from "./pages/Viewer";
@@ -139,6 +140,7 @@ export function App() {
   const ptt = useRef<PushToTalk | null>(null);
   const out = useRef(new AudioOut());
   const live = settings?.ai.assistant === "gemini-live";
+  const theme = useTheme();
 
   const showNotice = useCallback((message: string, level = "error") => {
     setNotice({ level, message });
@@ -264,6 +266,13 @@ export function App() {
         <span className="spacer" />
         {aiChip}
         <span className="chip"><span className={`dot ${pDot}`} />{pText}</span>
+        <button
+          className="theme-btn"
+          aria-label={theme.resolved === "dark" ? "Switch to light mode" : "Switch to dark mode"}
+          onClick={() => theme.set(theme.resolved === "dark" ? "light" : "dark")}
+        >
+          {theme.resolved === "dark" ? "☀️" : "🌙"}
+        </button>
         {page !== "assistant" && <MicButton voice={voice} />}
       </header>
       <nav className="rail">
