@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import type { AppSettings, GenerationProgress } from "@morphix/shared";
+import type { AppSettings, GenerationProgress, SmartSearchState } from "@morphix/shared";
 import { api } from "../bridge";
 import { MicButton, voiceLabel, type Voice } from "../App";
 import { TextEntry } from "../components/Keyboard";
@@ -16,9 +16,11 @@ interface Props {
 export function AssistantPage({ voice, settings, onOpenProject, onError }: Props) {
   const [gen, setGen] = useState<GenerationProgress | null>(null);
   const [typing, setTyping] = useState(false);
+  const [search, setSearch] = useState<SmartSearchState | null>(null);
   const listRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => api.onGenerationProgress(setGen), []);
+  useEffect(() => { const load=()=>api.smartSearchState().then(setSearch).catch(()=>{}); load(); const id=setInterval(load,1500); return()=>clearInterval(id); }, []);
   useEffect(() => {
     listRef.current?.scrollTo({ top: listRef.current.scrollHeight });
   }, [voice.turns, voice.userDraft, voice.assistantDraft, voice.proposal, gen]);
@@ -73,6 +75,9 @@ export function AssistantPage({ voice, settings, onOpenProject, onError }: Props
               </div>
             </div>
           )}
+          {search?.status === "searching" && <div className="bubble assistant">Searching real model libraries…</div>}
+          {search?.status === "failed" && <div className="bubble assistant" style={{color:"var(--bad)"}}>{search.error} Ask me to use Meshy or CAD instead.</div>}
+          {search?.status === "ready" && search.results.map((r)=><div className="bubble assistant gen-card" key={r.id}><div className="row" style={{gap:12,alignItems:"flex-start"}}>{r.imageUrl&&<img className="gen-thumb" src={r.imageUrl} alt=""/>}<div style={{flex:1}}><b>{r.name}</b><div className="muted small">{r.source} · {r.license||"Check license on source"}</div><p>{r.description}</p>{r.parts.length>0&&<div className="small"><b>Printed parts:</b> {r.parts.join(", ")}</div>}{r.nonPrintedParts.length>0&&<div className="small"><b>Also needs:</b> {r.nonPrintedParts.join(", ")}</div>}<div className="row" style={{marginTop:8}}><button className="btn ghost" onClick={()=>window.open(r.pageUrl,"_blank")}>Source</button><button className="btn primary" onClick={()=>api.selectSmartModel(r.id).then(()=>setSearch({...search,selectedId:r.id})).catch(e=>onError(String(e)))}>Choose</button><label className="btn ghost">Import parts<input hidden type="file" multiple accept=".stl,.obj,.ply,.glb,.3mf" onChange={async(e)=>{try{const files=await Promise.all(Array.from(e.target.files||[]).map(async f=>({name:f.name,bytes:await f.arrayBuffer()})));if(files.length){const out=await api.importSmartModel(r.id,files);onOpenProject(out.projectId)}}catch(err){onError(String(err))}}}/></label></div></div></div></div>)}
         </div>
         <div className="chips">
           <button className="btn" onClick={() => setTyping(true)}>⌨️ Type it</button>

@@ -24,6 +24,10 @@ const api: MorphixApi = {
   submitRecording: (pcm, rate) => ipcRenderer.invoke(IPC.submitRecording, pcm, rate),
   sendText: (text) => ipcRenderer.invoke(IPC.sendText, text),
   conversation: () => ipcRenderer.invoke(IPC.conversation),
+  smartSearch: (query) => ipcRenderer.invoke(IPC.smartSearch, query),
+  smartSearchState: () => ipcRenderer.invoke(IPC.smartSearchState),
+  selectSmartModel: (id) => ipcRenderer.invoke(IPC.selectSmartModel, id),
+  importSmartModel: (resultId, files) => ipcRenderer.invoke(IPC.importSmartModel, resultId, files),
 
   printerStatus: () => ipcRenderer.invoke(IPC.printerStatus),
   printerInfo: () => ipcRenderer.invoke(IPC.printerInfo),

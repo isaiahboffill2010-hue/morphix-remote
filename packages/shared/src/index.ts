@@ -77,6 +77,13 @@ export interface AssistantTurn {
   createdAt: string;
 }
 
+export interface SmartModelResult {
+  id: string; source: "printables" | "thingiverse" | "makerworld" | "other"; name: string; pageUrl: string; imageUrl: string | null;
+  description: string; license: string | null; creator: string | null; parts: string[]; nonPrintedParts: string[]; assembly: string[];
+  printAsIs: boolean; evidence: string[]; download: "manual" | "thingiverse-api";
+}
+export interface SmartSearchState { id: string; query: string; status: "searching" | "ready" | "failed"; results: SmartModelResult[]; error?: string; selectedId?: string; }
+
 export interface RecordingResult {
   turn: AssistantTurn;
   reply: AssistantTurn;
@@ -153,6 +160,7 @@ export type AppEvent =
   | { type: "job"; job: JobView }
   | { type: "prepare-progress"; jobId: string; stage: string }
   | { type: "print-status"; status: PrintControlStatus }
+  | { type: "smart-search"; state: SmartSearchState }
   | { type: "guardian"; snapshot: GuardianView };
 
 /** Progress of one pipeline (text→print, photo→print, prepare, print) for the progress bar. */
@@ -293,6 +301,10 @@ export interface MorphixApi {
   submitRecording(pcm16: ArrayBuffer, sampleRate: number): Promise<RecordingResult>;
   sendText(text: string): Promise<RecordingResult>;
   conversation(): Promise<AssistantTurn[]>;
+  smartSearch(query: string): Promise<SmartSearchState>;
+  smartSearchState(): Promise<SmartSearchState | null>;
+  selectSmartModel(id: string): Promise<SmartModelResult>;
+  importSmartModel(resultId: string, files: { name: string; bytes: ArrayBuffer }[]): Promise<{ projectId: string; versionId: string; parts: string[]; warnings: string[] }>;
 
   printerStatus(): Promise<PrinterStatus>;
   printerInfo(): Promise<PrinterInfo>;
@@ -350,6 +362,10 @@ export const IPC = {
   submitRecording: "assistant:recording",
   sendText: "assistant:text",
   conversation: "assistant:conversation",
+  smartSearch: "models:smart-search",
+  smartSearchState: "models:smart-search-state",
+  selectSmartModel: "models:smart-select",
+  importSmartModel: "models:smart-import",
   printerStatus: "printer:status",
   printerInfo: "printer:info",
   printerStatusEvent: "events:printer",

@@ -180,6 +180,16 @@ export class GeminiLive {
 
 export const MORPHIX_TOOLS: FunctionDeclaration[] = [
   {
+    name: "search_models",
+    description: "Search real free model libraries before Meshy when the request is functional, articulated, multi-part, mechanical, or likely already designed. Shows verified result cards and costs no Meshy credits.",
+    parameters: { type: "OBJECT", properties: { query: { type: "STRING", description: "Concise search phrase including function and important constraints." } }, required: ["query"] },
+  },
+  {
+    name: "select_searched_model",
+    description: "Select one of the displayed Smart Model Search results after the user names it or chooses its number.",
+    parameters: { type: "OBJECT", properties: { id: { type: "STRING", description: "Exact result id returned by search_models." } }, required: ["id"] },
+  },
+  {
     name: "generate_model",
     description:
       "Propose creating a new 3D model with Meshy. Does NOT start until the user confirms the credit cost. Write a detailed prompt for a single, solid, 3D-printable object.",
@@ -282,7 +292,9 @@ export const MORPHIX_SYSTEM_INSTRUCTION = `You are Morphix, the friendly voice o
 Always speak English. Replies are spoken aloud: keep them to one or two short sentences.
 
 How you work:
-- When the user describes something to make, ask at most one short clarifying question if it is truly vague, otherwise call generate_model with a detailed prompt for Meshy.
+- For functional, mechanical, articulated, moving, multi-piece or assembly objects, call search_models before proposing Meshy. Show the real result cards and ask which design they want. Explain printed parts, bearings/screws and assembly using only result data.
+- For decorative one-piece ideas, ask at most one short clarifying question if truly vague, otherwise call generate_model. If search finds nothing suitable, offer Meshy or CAD; never spend Meshy credits automatically.
+- Never invent a model, source link, license, test claim or download. A design is tested/working only when the search result contains supporting evidence.
 - Write Meshy prompts for a single solid printable object: describe shape, pose and style; include a flat stable base; avoid thin fragile parts, floating pieces and text.
 - generate_model and revise_model only PROPOSE the job. Tell the user the credit cost from the tool result and ask them to say yes or tap Confirm. Only call confirm_pending_action after they clearly say yes.
 - Never say a model is generating or ready unless a tool result or a [Morphix event] message says so.

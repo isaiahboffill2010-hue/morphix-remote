@@ -86,6 +86,18 @@ Only `/api/health` and pairing are usable without a device token. The tunnel tok
 
    ```text
    VITE_MORPHIX_REMOTE_URL=https://3daimodel-morphix.taila52865.ts.net
+
+## Smart Model Search
+
+Smart Model Search runs on the Pi and uses the existing `GEMINI_API_KEY` with Google's grounded search. Printables, MakerWorld, and other libraries without a documented public download API are opened through their normal public pages; users download there and import all STL/OBJ/PLY/GLB parts into Morphix. Morphix never bypasses a login or creator restriction.
+
+Thingiverse exposes a documented developer API. To mark Thingiverse results as eligible for its supported download flow, optionally add this to `~/Morphix/config/morphix.env`:
+
+```env
+THINGIVERSE_TOKEN=your_thingiverse_developer_token
+```
+
+Search itself does not spend Meshy credits. Imports are stored under the existing Pi model storage, preserve every uploaded part and an `assembly.json` manifest, and still require the normal prepare and print approvals.
    ```
 
 5. Deploy. If Vercel first deploys `main`, open **Deployments -> Create Deployment** and enter the `morphix-remote` Git reference, then promote that deployment to Production.

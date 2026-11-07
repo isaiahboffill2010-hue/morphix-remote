@@ -150,6 +150,15 @@ function Chat({ state, refresh }: { state: State; refresh: () => void }) {
     chunks: Int16Array[];
   } | null>(null);
   const turns = state?.conversation || [];
+  async function importParts(resultId:string, selected:FileList|null){
+    const chosen=Array.from(selected||[]); if(!chosen.length)return;
+    setBusy(true);
+    try{
+      const files=[] as {name:string;data:string}[];
+      for(const file of chosen){const bytes=new Uint8Array(await file.arrayBuffer());let binary="";for(let i=0;i<bytes.length;i+=8192)binary+=String.fromCharCode(...bytes.slice(i,i+8192));files.push({name:file.name,data:btoa(binary)})}
+      const out=await post<any>("/api/models/import",{resultId,files}); alert(`Imported ${out.parts.length} printable part${out.parts.length===1?"":"s"} to the Pi.${out.warnings.length?` ${out.warnings.join(" ")}`:""}`); await refresh();
+    }catch(e){alert((e as Error).message)}finally{setBusy(false)}
+  }
   async function send() {
     if (!text.trim()) return;
     setBusy(true);
@@ -248,6 +257,9 @@ function Chat({ state, refresh }: { state: State; refresh: () => void }) {
                   </p>
                 </div>
               )}
+              {state?.smartSearch?.status === "searching" && <div className="search-status">Searching real model libraries…</div>}
+              {state?.smartSearch?.status === "failed" && <div className="error">{state.smartSearch.error} You can ask Gemini to use Meshy or CAD instead.</div>}
+              {state?.smartSearch?.status === "ready" && <div className="search-results">{state.smartSearch.results.map((r:any)=><article className="search-card" key={r.id}>{r.imageUrl&&<img src={r.imageUrl} alt=""/>}<div><small>{r.source} · {r.license||"Check license on source"}</small><b>{r.name}</b><p>{r.description}</p>{r.parts?.length>0&&<p><strong>Printed parts:</strong> {r.parts.join(", ")}</p>}{r.nonPrintedParts?.length>0&&<p><strong>Also needs:</strong> {r.nonPrintedParts.join(", ")}</p>}{r.assembly?.length>0&&<p><strong>Assembly:</strong> {r.assembly.join(" ")}</p>}<div className="search-actions"><a href={r.pageUrl} target="_blank" rel="noreferrer">View source</a><button onClick={async()=>{await post("/api/models/select",{id:r.id});refresh()}}>Choose</button><label>Import parts<input hidden type="file" multiple accept=".stl,.obj,.ply,.glb,.3mf" onChange={(e)=>void importParts(r.id,e.target.files)}/></label></div></div></article>)}</div>}
             </div>
             <div className="composer">
               <button

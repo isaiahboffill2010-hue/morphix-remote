@@ -10,6 +10,7 @@ import { heightForDimension, scaledCheck, stlSize, type SizeDimension } from "@m
 import { type Ctx, latestVersion, moveProject, now } from "./context";
 import { type Actions, PolicyError } from "./actions";
 import type { Printing } from "./printing";
+import type { SmartModelSearch } from "@morphix/model-search";
 import { formatDuration } from "./printing";
 import { classifyWarningAnswer, type GuardianVoice } from "./guardian-voice";
 
@@ -43,6 +44,7 @@ export class VoiceController {
       model: string;
       meshyBalance: () => Promise<number | null>;
       printing: () => Printing | null;
+      smartSearch: SmartModelSearch;
     },
   ) {
     if (opts.apiKey) {
@@ -264,6 +266,16 @@ export class VoiceController {
   private async tool(c: FunctionCall): Promise<Record<string, unknown>> {
     const a = c.args;
     switch (c.name) {
+      case "search_models": {
+        const state = await this.opts.smartSearch.search(String(a.query ?? ""));
+        return state.status === "ready"
+          ? { ok: true, count: state.results.length, results: state.results.map((r) => ({ id: r.id, name: r.name, source: r.source, parts: r.parts, nonPrintedParts: r.nonPrintedParts, printAsIs: r.printAsIs })), note: "The real result cards are now on screen. Ask which one they want; do not call Meshy." }
+          : { ok: false, error: state.error, fallback: "Offer Meshy or dimensionally precise CAD." };
+      }
+      case "select_searched_model": {
+        const result = this.opts.smartSearch.select(String(a.id ?? ""));
+        return { ok: true, result, next: result.download === "manual" ? "Tell the user to open the source and use its normal download, then import every STL/3MF file into Morphix." : "The supported Thingiverse download can be imported after user confirmation." };
+      }
       case "generate_model": {
         const p = this.actions.proposeGenerate(String(a.prompt ?? ""), String(a.title ?? ""));
         return { ok: true, status: "awaiting_user_confirmation", credits: p.credits, balance: await this.credits(), note: "Ask the user to say yes or tap Confirm." };

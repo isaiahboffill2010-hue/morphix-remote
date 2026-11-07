@@ -1,7 +1,7 @@
 import { createHash, randomBytes, randomInt } from "node:crypto";
 import { chmodSync, createReadStream, existsSync, readFileSync } from "node:fs";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
-import type { AssistantTurn, GuardianView, JobView, PrepareSettings, PrepareSummary, PrintControlStatus } from "@morphix/shared";
+import type { AssistantTurn, GuardianView, JobView, PrepareSettings, PrepareSummary, PrintControlStatus, SmartModelResult, SmartSearchState } from "@morphix/shared";
 import type { PortalBackend, PortalUser, PrinterCommand } from "@morphix/portal";
 import { sniffImage } from "@morphix/portal";
 import type { Storage } from "@morphix/storage";
@@ -26,6 +26,10 @@ export interface RemoteDeps {
   cancel(): Promise<{ ok: boolean; message: string }>;
   guardian(): GuardianView;
   guardianAnswer(decision: "stop" | "keep"): Promise<{ ok: boolean; message: string }>;
+  smartSearch(): SmartSearchState | null;
+  searchModels(query: string): Promise<SmartSearchState>;
+  selectModel(id: string): SmartModelResult;
+  importModels(input: { resultId: string; files: { name: string; bytes: Buffer }[] }): Promise<{ projectId: string; versionId: string; parts: string[]; warnings: string[] }>;
   log(line: string): void;
 }
 
@@ -145,7 +149,7 @@ export class MorphixRemote {
 
     if (req.method === "GET" && u.pathname === "/api/state") {
       const [me, projects, actions, printer] = await Promise.all([this.d.backend.me(USER), this.d.backend.listProjects(USER), this.d.backend.pendingActions(USER), this.d.backend.printerStatus(USER)]);
-      json(res, 200, { me, projects, actions, printer, print: this.d.printStatus(), guardian: this.d.guardian(), conversation: this.d.conversation(), jobs: this.d.jobs(), device: { name: device.name } }); return;
+      json(res, 200, { me, projects, actions, printer, print: this.d.printStatus(), guardian: this.d.guardian(), conversation: this.d.conversation(), jobs: this.d.jobs(), smartSearch: this.d.smartSearch(), device: { name: device.name } }); return;
     }
     if (req.method === "GET" && u.pathname === "/api/projects") { json(res, 200, { projects: await this.d.backend.listProjects(USER) }); return; }
     let m = /^\/api\/projects\/([^/]+)$/.exec(u.pathname);
@@ -157,6 +161,9 @@ export class MorphixRemote {
     if (req.method === "GET" && u.pathname === "/api/camera/snapshot") { await this.cameraSnapshot(res); return; }
     if (req.method === "GET" && u.pathname === "/api/camera") { const c = await this.d.backend.cameraStream(USER); if (!c) { json(res, 503, { error: "camera_unavailable" }); return; } res.writeHead(200, { "Content-Type": c.contentType, "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff" }); c.stream.pipe(res); req.once("close", () => c.stream.destroy()); return; }
     if (req.method === "GET" && u.pathname === "/api/conversation") { json(res, 200, { conversation: this.d.conversation() }); return; }
+    if (req.method === "POST" && u.pathname === "/api/models/search") { const b = await this.input(req); json(res, 200, await this.d.searchModels(String(b.query ?? ""))); return; }
+    if (req.method === "POST" && u.pathname === "/api/models/select") { const b = await this.input(req); json(res, 200, { result: this.d.selectModel(String(b.id ?? "")) }); return; }
+    if (req.method === "POST" && u.pathname === "/api/models/import") { const b = await this.input(req, 80_000_000); const raw = Array.isArray(b.files) ? b.files : []; if (!raw.length || raw.length > 20) throw new Error("Choose 1 to 20 model files."); const files = raw.map((v:any) => { const bytes=Buffer.from(String(v.data??""),"base64"); if(!bytes.length||bytes.length>20_000_000) throw new Error("Each model file must be under 20 MB."); return {name:String(v.name??"model.stl").slice(0,120),bytes}; }); json(res, 201, await this.d.importModels({ resultId:String(b.resultId??""), files })); return; }
     if (req.method === "POST" && u.pathname === "/api/assistant/text") { const b = await this.input(req); const text = String(b.text ?? "").trim().slice(0, 1000); if (!text) throw new Error("message required"); await this.d.assistantText(text); json(res, 202, { ok: true }); return; }
     if (req.method === "POST" && u.pathname === "/api/assistant/voice") { const b = await this.input(req, 9_000_000); const pcm = Buffer.from(String(b.pcm ?? ""), "base64"); const rate = Number(b.sampleRate); if (rate !== 16000 || !pcm.length || pcm.length > 7_680_000) throw new Error("expected up to two minutes of 16 kHz PCM16"); await this.d.assistantVoice(pcm, rate); json(res, 202, { ok: true }); return; }
     if (req.method === "POST" && u.pathname === "/api/requests/text") { const b = await this.input(req); json(res, 202, await this.d.backend.createTextRequest(String(b.prompt ?? "").trim().slice(0, 1000), USER)); return; }

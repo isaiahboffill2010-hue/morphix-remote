@@ -17,6 +17,8 @@ describe("Morphix Remote pairing", () => {
       storage, backend: new FakeBackend({ storageRoot: root, tickMs: 0 }), conversation: () => [], jobs: () => [], assistantText: async () => {}, assistantVoice: async () => {},
       setHeight: () => ({}), proposeRefine: () => ({}), prepare: async () => ({ ok: false } as never), latestPrint: () => null,
       proposePrint: () => ({}), printStatus: () => ({ enabled: false, gxVerified: false, job: null, busy: null, lastMessage: null }),
+      smartSearch: () => null, searchModels: async () => ({ id: "s", query: "q", status: "ready", results: [] }), selectModel: () => { throw new Error("none"); },
+      importModels: async () => ({ projectId: "p", versionId: "v", parts: [], warnings: [] }),
       pause: async () => ({ ok: false, message: "disabled" }), resume: async () => ({ ok: false, message: "disabled" }), cancel: async () => ({ ok: false, message: "disabled" }),
       guardian: () => ({ running: false } as never), guardianAnswer: async () => ({ ok: false, message: "disabled" }), log: () => {},
     }, { host: "127.0.0.1", port: 0, allowedOrigins: ["https://morphix.example"] });

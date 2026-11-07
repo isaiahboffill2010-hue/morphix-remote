@@ -1,6 +1,6 @@
 // Morphix — Electron main process (Phases 1–5).
 import { app, BrowserWindow, ipcMain, session, type IpcMainInvokeEvent } from "electron";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { createReadStream, existsSync, readFileSync, statSync } from "node:fs";
 import { createServer, type Server } from "node:http";
 import { dirname, extname, join, resolve, sep } from "node:path";
@@ -25,9 +25,12 @@ import { GuardianVoice } from "./guardian-voice";
 import { LocalTts } from "./tts";
 import { createPortal, loadPortalAuthConfig, type Portal } from "@morphix/portal";
 import { MorphixRemote } from "@morphix/remote";
+import { SmartModelSearch } from "@morphix/model-search";
 import { toMorphixError, getErrorEntry } from "@morphix/errors";
 import type { MachineCommand } from "@morphix/shared";
 import QRCode from "qrcode";
+import { importScan } from "@morphix/photo3d";
+import { writeBinaryStl } from "@morphix/slicing";
 
 const APP_DIR = resolve(__dirname, "..");
 const REPO_ROOT = resolve(APP_DIR, "..", "..");
@@ -102,12 +105,19 @@ const generation = new Generation(
 generation.jobs = jobs;
 const actions = new Actions(ctx, generation, { usingMeshy: () => meshy !== null, meshyModel: MESHY_MODEL, dailyLimit: DAILY_LIMIT });
 const photo = new PhotoPipeline(ctx, jobs, actions, printing);
+const smartSearch = new SmartModelSearch({
+  apiKey: has("GEMINI_API_KEY") ? env("GEMINI_API_KEY") : undefined,
+  model: env("MORPHIX_GEMINI_TEXT_MODEL") || "gemini-2.5-flash",
+  thingiverseToken: env("THINGIVERSE_TOKEN") || undefined,
+  onChange: (state) => ctx.event({ type: "smart-search", state } as AppEvent),
+});
 actions.printer = { proposal: (jobId) => printing.printProposal(jobId), start: (jobId, by) => printing.startApprovedPrint(jobId, by) };
 const voice = new VoiceController(ctx, actions, {
   apiKey: has("GEMINI_API_KEY") ? env("GEMINI_API_KEY") : undefined,
   model: GEMINI_MODEL,
   meshyBalance: async () => (meshy ? (await meshy.balance()).balance : null),
   printing: () => printing,
+  smartSearch,
 });
 
 // Spoken Print Guardian warnings: Gemini's voice, or espeak-ng when Gemini can't.
@@ -359,6 +369,10 @@ function registerIpc(): void {
         createdAt: String(r.created_at),
       })),
   );
+  handle(IPC.smartSearch, (query: string) => smartSearch.search(String(query ?? "")));
+  handle(IPC.smartSearchState, () => smartSearch.state);
+  handle(IPC.selectSmartModel, (id: string) => smartSearch.select(String(id)));
+  handle(IPC.importSmartModel, (resultId: string, files: { name: string; bytes: ArrayBuffer }[]) => importSmartModelFiles(String(resultId), files.map((f) => ({ name: String(f.name), bytes: Buffer.from(f.bytes) }))));
 
   // Gemini Live voice
   handle(IPC.voiceTurn, async (pcm: ArrayBuffer, sampleRate: number) => {
@@ -701,6 +715,43 @@ function sharedWebBackend() {
     });
 }
 
+async function importSmartModelFiles(resultId: string, files: { name: string; bytes: Buffer }[]) {
+  const result = smartSearch.select(resultId);
+  const supported: { name: string; stl: Buffer; notes: string[] }[] = [];
+  const preserved: string[] = [], warnings: string[] = [];
+  for (const file of files) {
+    const name = file.name.replace(/[^A-Za-z0-9._ -]/g, "_").slice(0, 100) || "part";
+    try {
+      const imported = importScan(name, file.bytes);
+      supported.push({ name: name.replace(/\.[^.]+$/, "") + ".stl", stl: writeBinaryStl(imported.mesh, `Morphix imported ${name}`), notes: imported.notes });
+    } catch (e) {
+      preserved.push(name);
+      warnings.push(`${name}: preserved but not previewable/sliceable (${(e as Error).message})`);
+    }
+  }
+  if (!supported.length) throw new Error("No printable STL, OBJ, PLY or GLB mesh was found. Keep the original files and export at least one part as STL.");
+  const projectId=randomUUID(), versionId=randomUUID(), t=now();
+  ctx.db.run("INSERT INTO projects(id,title,prompt,state,created_at,updated_at) VALUES (?,?,?,?,?,?)",[projectId,result.name,`Imported from ${result.pageUrl}`,"idea",t,t]);
+  moveProject(ctx,projectId,"generating");
+  const dir=storage.modelDir(projectId,versionId);
+  for (const [i,part] of supported.entries()) {
+    const path=join(dir,`part-${String(i+1).padStart(2,"0")}-${part.name}`); storage.writeAtomic(path,part.stl);
+    ctx.db.run("INSERT INTO assets(id,version_id,kind,rel_path,bytes,sha256,created_at) VALUES (?,?,?,?,?,?,?)",[randomUUID(),versionId,"assembly-part",storage.relative(path),part.stl.length,createHash("sha256").update(part.stl).digest("hex"),t]);
+  }
+  for (const file of files.filter((f)=>preserved.includes(f.name.replace(/[^A-Za-z0-9._ -]/g,"_").slice(0,100)))) {
+    const name=file.name.replace(/[^A-Za-z0-9._ -]/g,"_").slice(0,100); const path=join(dir,`original-${name}`); storage.writeAtomic(path,file.bytes);
+    ctx.db.run("INSERT INTO assets(id,version_id,kind,rel_path,bytes,sha256,created_at) VALUES (?,?,?,?,?,?,?)",[randomUUID(),versionId,"original",storage.relative(path),file.bytes.length,createHash("sha256").update(file.bytes).digest("hex"),t]);
+  }
+  const primary=join(dir,"model.stl"); storage.writeAtomic(primary,supported[0].stl);
+  const manifest={source:result.pageUrl,license:result.license,creator:result.creator,parts:supported.map((p)=>p.name),preserved,nonPrintedParts:result.nonPrintedParts,assembly:result.assembly,evidence:result.evidence,warnings};
+  const manifestPath=join(dir,"assembly.json"); storage.writeAtomic(manifestPath,JSON.stringify(manifest,null,2));
+  ctx.db.run(`INSERT INTO model_versions(id,project_id,version,source,kind,format,rel_path,stl_rel_path,bytes,target_height_mm,thumbnail_rel_path,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`,[versionId,projectId,1,"scan","preview","stl",storage.relative(primary),storage.relative(primary),supported[0].stl.length,null,null,t]);
+  ctx.db.run("INSERT INTO assets(id,version_id,kind,rel_path,bytes,sha256,created_at) VALUES (?,?,?,?,?,?,?)",[randomUUID(),versionId,"assembly-manifest",storage.relative(manifestPath),Buffer.byteLength(JSON.stringify(manifest)),createHash("sha256").update(JSON.stringify(manifest)).digest("hex"),t]);
+  ctx.db.run("UPDATE projects SET latest_version_id=?,updated_at=? WHERE id=?",[versionId,t,projectId]); moveProject(ctx,projectId,"reviewing"); ctx.db.flush(); ctx.currentProjectId=projectId;
+  ctx.event({type:"navigate",page:"viewer",projectId});
+  return {projectId,versionId,parts:supported.map((p)=>p.name),warnings};
+}
+
 async function startRemote(): Promise<void> {
   if (env("MORPHIX_REMOTE") === "0") return;
   try {
@@ -729,6 +780,10 @@ async function startRemote(): Promise<void> {
       pause: () => printing.pause(), resume: () => printing.resume(), cancel: () => printing.cancel(),
       guardian: () => printing.view(),
       guardianAnswer: (decision) => guardianVoice.answer(decision, "touch"),
+      smartSearch: () => smartSearch.state,
+      searchModels: (query) => smartSearch.search(query),
+      selectModel: (id) => smartSearch.select(id),
+      importModels: (input) => importSmartModelFiles(input.resultId, input.files),
       log: (line) => log.write("info", `[remote] ${line}`),
     }, { host: env("MORPHIX_REMOTE_HOST") || "127.0.0.1", port: Number(env("MORPHIX_REMOTE_PORT") || 8787), allowedOrigins: origins });
     const r = await remote.start();
