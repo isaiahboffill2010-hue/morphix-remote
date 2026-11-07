@@ -85,7 +85,7 @@ export function AssistantPage({ onOpenProject }: { onOpenProject: (id: string) =
   const generating = gen && (gen.status === "queued" || gen.status === "running");
 
   return (
-    <div className="assistant">
+    <div className="assistant-page">
       <section className="card mic-panel">
         <button
           className={`mic ${recording ? "live" : ""} ${busy ? "busy" : ""}`}
