@@ -5,11 +5,13 @@ import { IPC, type GenerationProgress } from "@morphix/shared";
 import type { ModelGenerator } from "@morphix/meshy";
 import type { Row } from "@morphix/database";
 import { type Ctx, moveProject, now } from "./context";
+import type { Jobs } from "./jobs";
 
 /** Default display height for Meshy models (their native units aren't millimetres). */
 const MESHY_DEFAULT_HEIGHT_MM = 80;
 
 export interface FinishedInfo {
+  jobId: string | null;
   projectId: string;
   versionId: string;
   title: string;
@@ -24,10 +26,15 @@ export interface StartRequest {
   title: string;
   kind: "preview" | "refine";
   parentVersionId?: string | null;
+  /** Who asked: "touchscreen", "voice" or a portal user id. */
+  owner?: string;
+  /** Continue an existing progress job (e.g. a portal request that waited for approval). */
+  jobId?: string | null;
 }
 
 export class Generation {
   private running = new Set<string>();
+  jobs: Jobs | null = null;
 
   constructor(
     private ctx: Ctx,
@@ -39,7 +46,7 @@ export class Generation {
     return this.running.size > 0;
   }
 
-  start(req: StartRequest): { projectId: string; taskId: string } {
+  start(req: StartRequest): { projectId: string; taskId: string; jobId: string | null } {
     const { db } = this.ctx;
     const gen = this.generator();
     const t = now();
@@ -60,19 +67,25 @@ export class Generation {
     );
     db.flush();
     this.ctx.currentProjectId = projectId;
-    void this.run(taskId, projectId, req.prompt, req.kind, req.parentVersionId ?? null, undefined);
-    return { projectId, taskId };
+    let jobId = req.jobId ?? null;
+    if (jobId && this.jobs?.manager.get(jobId)) this.jobs.manager.setMeta(jobId, { projectId, taskId });
+    else jobId = this.jobs?.create("text-to-print", req.kind === "refine" ? `Colouring ${req.title}` : req.title, req.owner ?? "touchscreen", { projectId, taskId }, { print: false }).id ?? null;
+    if (jobId) {
+      this.jobs!.done(jobId, "understand");
+    }
+    void this.run(taskId, projectId, req.prompt, req.kind, req.parentVersionId ?? null, undefined, jobId);
+    return { projectId, taskId, jobId };
   }
 
   /** Continue polling Meshy tasks that were running when the app stopped. */
   resume(rows: Row[]): void {
     for (const r of rows) {
       this.ctx.log.write("info", "resuming Meshy task", { taskId: r.id, remoteId: r.remote_id });
-      void this.run(String(r.id), String(r.project_id), String(r.prompt), r.kind as "preview" | "refine", (r.parent_version_id as string) ?? null, String(r.remote_id));
+      void this.run(String(r.id), String(r.project_id), String(r.prompt), r.kind as "preview" | "refine", (r.parent_version_id as string) ?? null, String(r.remote_id), null);
     }
   }
 
-  private async run(taskId: string, projectId: string, prompt: string, kind: "preview" | "refine", parentVersionId: string | null, resumeRemoteId: string | undefined) {
+  private async run(taskId: string, projectId: string, prompt: string, kind: "preview" | "refine", parentVersionId: string | null, resumeRemoteId: string | undefined, jobId: string | null) {
     const { db, storage, log } = this.ctx;
     const gen = this.generator();
     const title = String(db.get("SELECT title FROM projects WHERE id = ?", [projectId])?.title ?? prompt);
@@ -90,6 +103,13 @@ export class Generation {
             u.status === "succeeded" ? "running" : u.status, u.progress, now(), taskId,
           ]);
           if (u.status !== "succeeded") report(u);
+          if (u.stage.startsWith("Downloading")) {
+            this.jobs?.done(jobId, "generate");
+            this.jobs?.start(jobId, "download", "Saving to the Pi");
+          } else if (u.status !== "succeeded") {
+            this.jobs?.start(jobId, "generate", u.stage);
+            this.jobs?.update(jobId, "generate", u.progress, u.stage);
+          }
         },
         {
           kind,
@@ -146,7 +166,8 @@ export class Generation {
       db.flush();
       log.write("info", "model generated", { projectId, versionId, kind: versionKind, bytes: model.data.length, source: gen.name, credits: model.credits });
       report({ status: "succeeded", progress: 100, stage: "Model ready", versionId, kind: versionKind, thumbnailUrl: this.ctx.url(thumbRel) ?? undefined });
-      this.onFinished({ projectId, versionId, title, kind: versionKind, ok: true });
+      this.jobs?.done(jobId, "download");
+      this.onFinished({ jobId, projectId, versionId, title, kind: versionKind, ok: true });
     } catch (e) {
       const msg = (e as Error).message;
       db.run("UPDATE generation_tasks SET status = 'failed', error = ?, updated_at = ? WHERE id = ?", [msg, now(), taskId]);
@@ -159,7 +180,9 @@ export class Generation {
       db.flush();
       log.write("error", "generation failed", { projectId, error: msg });
       report({ status: "failed", progress: 0, stage: "Failed", error: msg });
-      this.onFinished({ projectId, versionId: "", title, kind, ok: false, error: msg });
+      const running = this.jobs?.manager.get(jobId ?? "")?.stages.find((s) => s.status === "running")?.key ?? "generate";
+      this.jobs?.fail(jobId, running, e, "MX-SYS-001");
+      this.onFinished({ jobId, projectId, versionId: "", title, kind, ok: false, error: msg });
     } finally {
       this.running.delete(taskId);
     }

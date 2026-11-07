@@ -27,10 +27,12 @@ function General({ settings, onError }: { settings: AppSettings | null; onError:
   const [logs, setLogs] = useState<string[]>([]);
   const [balance, setBalance] = useState<string>("–");
   const [gemini, setGemini] = useState<string | null>(null);
+  const [portal, setPortal] = useState<{ running: boolean; url: string | null; authConfigured: boolean; missing: string[] } | null>(null);
 
   const refresh = () => {
     api.getSystemInfo().then(setSys);
     api.recentLogs(80).then(setLogs);
+    api.portalInfo().then(setPortal).catch(() => {});
     if (settings?.keys.meshy) api.meshyBalance().then((r) => setBalance("balance" in r ? `${r.balance} credits` : r.error));
   };
   // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -78,6 +80,14 @@ function General({ settings, onError }: { settings: AppSettings | null; onError:
             </div>
           ))}
         <div className="muted small" style={{ marginTop: 6 }}>Keys live in {settings?.storageRoot}/config/morphix.env on the Pi and never reach this screen.</div>
+      </div>
+      <div className="card">
+        <h3>🌐 Web portal</h3>
+        <div className="stat"><span className="muted">Address</span><span>{portal?.url ?? "–"}</span></div>
+        <div className="stat"><span className="muted">Running</span><span style={{ color: portal?.running ? "var(--ok)" : "var(--bad)" }}>{portal ? (portal.running ? "Yes" : "No") : "–"}</span></div>
+        <div className="stat"><span className="muted">Auth0 login</span><span style={{ color: portal?.authConfigured ? "var(--ok)" : "var(--warn)" }}>{portal ? (portal.authConfigured ? "Set up" : "Needs setup") : "–"}</span></div>
+        {portal && !portal.authConfigured && <div className="muted small" style={{ marginTop: 4 }}>Missing: {portal.missing.join(", ")}</div>}
+        <div className="muted small" style={{ marginTop: 4 }}>Open it on a phone on the same Wi-Fi to send photos.</div>
       </div>
       <div className="card">
         <h3>Storage</h3>

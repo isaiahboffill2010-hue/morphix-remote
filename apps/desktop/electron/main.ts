@@ -18,6 +18,12 @@ import { Generation, type FinishedInfo } from "./generation";
 import { Actions, PolicyError } from "./actions";
 import { VoiceController } from "./voice";
 import { Printing } from "./printing";
+import { Jobs } from "./jobs";
+import { PhotoPipeline } from "./photo";
+import { createPortalBackend } from "./portal-backend";
+import { createPortal, loadPortalAuthConfig, type Portal } from "@morphix/portal";
+import { toMorphixError, getErrorEntry } from "@morphix/errors";
+import type { MachineCommand } from "@morphix/shared";
 
 const APP_DIR = resolve(__dirname, "..");
 const REPO_ROOT = resolve(APP_DIR, "..", "..");
@@ -59,13 +65,25 @@ const ctx: Ctx = {
   url: (rel) => (rel ? `${origin}/library/${rel}` : null),
   currentProjectId: null,
 };
+const ALLOW_UNVERIFIED = new Set((env("MORPHIX_ALLOW_UNVERIFIED") || "").split(",").map((x) => x.trim()).filter(Boolean));
+const PORTAL_PORT = Number(env("PORTAL_PORT") || 8443);
+let portal: Portal | null = null;
+let portalUrl: string | null = null;
 const printing = new Printing(ctx, {
   repoRoot: REPO_ROOT,
   printerHost: PRINTER_HOST,
   controlsEnabled: PRINT_CONTROLS,
   gxVerified: GX_VERIFIED,
   pausedStatuses: (env("MORPHIX_PAUSED_STATUSES") || "PAUSED").split(",").map((x) => x.trim()).filter(Boolean),
+  allowUnverified: {
+    light: ALLOW_UNVERIFIED.has("light"),
+    fan: ALLOW_UNVERIFIED.has("fan"),
+    temperatures: ALLOW_UNVERIFIED.has("temperatures"),
+    motors: ALLOW_UNVERIFIED.has("motors"),
+  },
 });
+const jobs = new Jobs(ctx);
+printing.jobs = jobs;
 // All printer traffic (polls + control) goes through the controller's queue so sessions never collide.
 const printer = new PrinterObserver(printing.controller.transport, onPrinterStatus);
 const generation = new Generation(
@@ -76,7 +94,9 @@ const generation = new Generation(
   },
   onGenerationFinished,
 );
+generation.jobs = jobs;
 const actions = new Actions(ctx, generation, { usingMeshy: () => meshy !== null, meshyModel: MESHY_MODEL, dailyLimit: DAILY_LIMIT });
+const photo = new PhotoPipeline(ctx, jobs, actions, printing);
 actions.printer = { proposal: (jobId) => printing.printProposal(jobId), start: (jobId, by) => printing.startApprovedPrint(jobId, by) };
 const voice = new VoiceController(ctx, actions, {
   apiKey: has("GEMINI_API_KEY") ? env("GEMINI_API_KEY") : undefined,
@@ -153,6 +173,8 @@ function onGenerationFinished(info: FinishedInfo): void {
   if (info.ok) {
     ctx.currentProjectId = info.projectId;
     ctx.event({ type: "navigate", page: "viewer", projectId: info.projectId });
+    // Get it ready to print straight away (free; AI picks the settings), in the same progress job.
+    void printing.prepare(info.versionId, "auto", info.jobId).catch((e) => log.write("warn", "auto-prepare failed", { error: (e as Error).message }));
     void voice.notify(
       info.kind === "refine"
         ? `The coloured version of "${info.title}" is ready on screen.`
@@ -205,8 +227,20 @@ function handle<A extends unknown[], R>(channel: string, fn: (...args: A) => R |
     if (!event.senderFrame || !event.senderFrame.url.startsWith(origin + "/")) {
       throw new Error("IPC from untrusted frame");
     }
-    return fn(...(args as A));
+    try {
+      const r = fn(...(args as A));
+      return r instanceof Promise ? r.catch((e) => Promise.reject(coded(e))) : r;
+    } catch (e) {
+      throw coded(e);
+    }
   });
+}
+
+/** Errors cross IPC as "MX-CODE|title|hint|detail" so the screen can show a friendly card. */
+function coded(e: unknown): Error {
+  const me = toMorphixError(e);
+  const entry = getErrorEntry(me.code);
+  return new Error(`${me.code}|${entry?.title ?? me.title}|${entry?.hint ?? me.hint}|${(e as Error)?.message ?? ""}`);
 }
 
 function registerIpc(): void {
@@ -356,7 +390,16 @@ function registerIpc(): void {
   handle(IPC.printerStatus, () => printer.status);
 
   // Phase 3–5: print preparation, printing, guardian
-  handle(IPC.preparePrint, (versionId: string, settings: Record<string, unknown>) => printing.prepare(safeId(String(versionId)), settings ?? {}));
+  handle(IPC.preparePrint, (versionId: string, settings: Record<string, unknown> | "auto") =>
+    printing.prepare(safeId(String(versionId)), settings === "auto" || !settings ? "auto" : settings),
+  );
+  handle(IPC.machineCommand, (c: MachineCommand) => printing.machine(c, "touch"));
+  handle(IPC.machineCapabilities, () => printing.capabilities());
+  handle(IPC.jobs, () => jobs.list());
+  handle(IPC.portalInfo, () => {
+    const a = loadPortalAuthConfig(process.env);
+    return { running: portal !== null, url: portalUrl, authConfigured: a.ok, missing: a.ok ? [] : [...a.missing, ...a.problems] };
+  });
   handle(IPC.latestPrintJob, (projectId: string) => printing.latest(safeId(String(projectId))));
   handle(IPC.requestPrint, (jobId: string) => {
     try {
@@ -555,6 +598,7 @@ app.whenReady().then(async () => {
 
   registerIpc();
   createWindow();
+  void startPortal();
   printer.start(POLL_SECONDS * 1000);
   if (resumable.length && meshy) generation.resume(resumable);
   const latest = ctx.db.get("SELECT id FROM projects ORDER BY updated_at DESC LIMIT 1");
@@ -562,11 +606,48 @@ app.whenReady().then(async () => {
   void latestVersion; // (used by modules)
 });
 
+async function startPortal(): Promise<void> {
+  try {
+    const backend = createPortalBackend({
+      ctx, jobs, actions, photo, printing,
+      printerStatus: () => printer.status,
+      cameraUrl: `${CAMERA_BASE}/?action=stream`,
+      meshyReady: () => meshy !== null,
+      dailyLimit: DAILY_LIMIT,
+      startText: (prompt, owner, jobId) => {
+        const text = prompt.trim().slice(0, 500);
+        actions.proposeCustom(
+          { kind: "generate", title: text.slice(0, 60), prompt: text, projectId: null, versionId: null, credits: actions.previewCredits(), details: [`Uses ${actions.previewCredits()} Meshy credits`, text.slice(0, 160)] },
+          () => generation.start({ prompt: text, title: text.slice(0, 60), kind: "preview", owner, jobId }),
+          () => jobs.cancel(jobId, "cancelled"),
+        );
+      },
+    });
+    portal = createPortal({
+      backend,
+      auth: loadPortalAuthConfig(process.env),
+      host: env("PORTAL_HOST") || "0.0.0.0",
+      port: PORTAL_PORT,
+      storageRoot: storage.root,
+      webRoot: join(REPO_ROOT, "packages", "portal", "web"),
+      threeRoot: join(REPO_ROOT, "node_modules", "three"),
+      log: (line) => log.write("info", `[portal] ${line}`),
+    });
+    const r = await portal.start();
+    portalUrl = env("PORTAL_BASE_URL") || r.url;
+    log.write("info", "web portal started", { url: portalUrl });
+  } catch (e) {
+    portal = null;
+    log.write("error", "web portal failed to start", { error: (e as Error).message });
+  }
+}
+
 app.on("window-all-closed", () => app.quit());
 app.on("before-quit", () => {
   printer.stop();
   voice.close();
   void printing.shutdown();
+  void portal?.stop();
   try {
     ctx.db?.close();
   } catch (e) {

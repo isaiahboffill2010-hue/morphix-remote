@@ -4,6 +4,8 @@ import { api } from "./bridge";
 import { AudioOut, PushToTalk } from "./audio";
 import { installDragScroll } from "./dragScroll";
 import { useTheme } from "./theme";
+import { JobBar } from "./components/JobBar";
+import { friendlyError, type FriendlyError } from "./errors";
 import { AssistantPage } from "./pages/Assistant";
 import { LibraryPage } from "./pages/Library";
 import { ViewerPage } from "./pages/Viewer";
@@ -127,7 +129,7 @@ export function App() {
   const [printer, setPrinter] = useState<PrinterStatus | null>(null);
   const [settings, setSettings] = useState<AppSettings | null>(null);
   const [pending, setPending] = useState<PendingAction | null>(null);
-  const [notice, setNotice] = useState<{ level: string; message: string } | null>(null);
+  const [notice, setNotice] = useState<(FriendlyError & { level: string }) | null>(null);
   const [heightEvent, setHeightEvent] = useState<{ versionId: string; heightMm: number; n: number } | null>(null);
 
   // voice
@@ -142,9 +144,10 @@ export function App() {
   const live = settings?.ai.assistant === "gemini-live";
   const theme = useTheme();
 
-  const showNotice = useCallback((message: string, level = "error") => {
-    setNotice({ level, message });
-    setTimeout(() => setNotice(null), 6500);
+  const showNotice = useCallback((message: string, level = "error", code?: string, hint?: string) => {
+    const f = code ? { code, title: message, hint } : friendlyError(message);
+    setNotice({ ...f, level });
+    setTimeout(() => setNotice(null), 8000);
   }, []);
 
   useEffect(() => installDragScroll(), []);
@@ -162,7 +165,7 @@ export function App() {
           if (e.projectId) setProjectId(e.projectId);
           setPage(e.page);
         } else if (e.type === "model-height") setHeightEvent((h) => ({ versionId: e.versionId, heightMm: e.heightMm, n: (h?.n ?? 0) + 1 }));
-        else if (e.type === "notice") showNotice(e.message, e.level);
+        else if (e.type === "notice") showNotice(e.message, e.level, e.code, e.hint);
       }),
       api.onVoiceEvent((e) => {
         switch (e.type) {
@@ -296,7 +299,14 @@ export function App() {
           {page === "printer" && <PrinterPage status={printer} settings={settings} onError={showNotice} />}
           {page === "settings" && <SettingsPage settings={settings} onError={showNotice} />}
         </PageBoundary>
-        {notice && <div className={`toast ${notice.level}`} onClick={() => setNotice(null)}>{notice.message}</div>}
+        <JobBar />
+        {notice && (
+          <div className={`toast ${notice.level}`} onClick={() => setNotice(null)}>
+            <div>{notice.level === "error" ? "😟 " : ""}{notice.title}</div>
+            {notice.hint && <div className="small" style={{ fontWeight: 600, marginTop: 4 }}>{notice.hint}</div>}
+            {notice.code && <div className="small" style={{ opacity: 0.7, marginTop: 4, fontFamily: "ui-monospace, monospace" }}>Error code {notice.code}</div>}
+          </div>
+        )}
       </main>
       {pending && (
         <div className="modal-backdrop" data-no-drag-scroll>

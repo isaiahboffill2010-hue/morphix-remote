@@ -26,6 +26,7 @@ Icon=applications-graphics
 Categories=Graphics;
 DESK
 systemctl --user daemon-reload
-# The dashboard always runs. Morphix is started on demand; autostart comes in Phase 5.
+# Both run at boot: Morphix hosts the touchscreen app and the web portal.
 systemctl --user enable --now qd330-web.service >/dev/null
 systemctl --user restart qd330-web.service
+systemctl --user enable morphix.service >/dev/null

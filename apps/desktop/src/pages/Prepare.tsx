@@ -7,6 +7,7 @@ const INFILL = [10, 15, 25, 50];
 const SUPPORTS: [string, PrepareSettings["supports"]][] = [["None", "none"], ["Auto", "auto"], ["Plate only", "buildplate"]];
 const STAGES: Record<string, string> = {
   load: "Opening your model 📦", validate: "Checking it for holes 🔍", repair: "Fixing little problems 🔧", place: "Finding the best way to stand it up 🧍",
+  advise: "Picking the best settings 🤖",
   slice: "Cutting it into layers 🍰 (this can take a few minutes)", gx: "Writing the printer file 📝", done: "All done! 🎉",
 };
 
@@ -26,6 +27,7 @@ interface Props {
 export function PreparePage({ projectId, onBack, onError }: Props) {
   const [data, setData] = useState<{ project: Project; versions: ModelVersion[] } | null>(null);
   const [settings, setSettings] = useState<PrepareSettings>({ layerHeightMm: 0.2, infillPercent: 15, supports: "auto" });
+  const [manual, setManual] = useState(false);
   const [summary, setSummary] = useState<PrepareSummary | null>(null);
   const [stage, setStage] = useState<string | null>(null);
   const [control, setControl] = useState<PrintControlStatus | null>(null);
@@ -54,7 +56,7 @@ export function PreparePage({ projectId, onBack, onError }: Props) {
     setStage("load");
     setSummary(null);
     try {
-      setSummary(await api.preparePrint(v.id, settings));
+      setSummary(await api.preparePrint(v.id, manual ? settings : "auto"));
     } catch (e) {
       onError((e as Error).message);
     } finally {
@@ -74,12 +76,25 @@ export function PreparePage({ projectId, onBack, onError }: Props) {
           <button className="btn ghost" style={{ minHeight: 40 }} onClick={onBack}>‹ Back</button>
         </div>
         <div className="muted small">{data.project.title} · v{v.version} · target height {v.targetHeightMm ? `${v.targetHeightMm.toFixed(0)} mm` : "original"}</div>
-        <div className="field-label">Quality</div>
-        <div className="seg">{LAYERS.map(([l, h]) => <button key={h} className={settings.layerHeightMm === h ? "on" : ""} onClick={() => setSettings({ ...settings, layerHeightMm: h })}>{l}</button>)}</div>
-        <div className="field-label">Infill</div>
-        <div className="seg">{INFILL.map((i) => <button key={i} className={settings.infillPercent === i ? "on" : ""} onClick={() => setSettings({ ...settings, infillPercent: i })}>{i}%</button>)}</div>
-        <div className="field-label">Supports</div>
-        <div className="seg">{SUPPORTS.map(([l, m]) => <button key={m} className={settings.supports === m ? "on" : ""} onClick={() => setSettings({ ...settings, supports: m })}>{l}</button>)}</div>
+        <div className="seg" style={{ marginTop: 8 }}>
+          <button className={!manual ? "on" : ""} onClick={() => setManual(false)}>✨ Let the AI choose</button>
+          <button className={manual ? "on" : ""} onClick={() => setManual(true)}>🛠️ I'll choose</button>
+        </div>
+        {!manual && (
+          <div className="muted small" style={{ marginTop: 4 }}>
+            The AI looks at your model and picks the best slicer, layers, strength and supports for it.
+          </div>
+        )}
+        {manual && (
+          <>
+            <div className="field-label">Quality</div>
+            <div className="seg">{LAYERS.map(([l, h]) => <button key={h} className={settings.layerHeightMm === h ? "on" : ""} onClick={() => setSettings({ ...settings, layerHeightMm: h })}>{l}</button>)}</div>
+            <div className="field-label">Infill</div>
+            <div className="seg">{INFILL.map((i) => <button key={i} className={settings.infillPercent === i ? "on" : ""} onClick={() => setSettings({ ...settings, infillPercent: i })}>{i}%</button>)}</div>
+            <div className="field-label">Supports</div>
+            <div className="seg">{SUPPORTS.map(([l, m]) => <button key={m} className={settings.supports === m ? "on" : ""} onClick={() => setSettings({ ...settings, supports: m })}>{l}</button>)}</div>
+          </>
+        )}
         <button className="btn primary" style={{ marginTop: "auto" }} disabled={busy} onClick={() => void run()}>
           {busy ? STAGES[stage!] ?? "Working…" : summary ? "Try again 🔁" : "Get it ready ✨"}
         </button>
@@ -96,7 +111,13 @@ export function PreparePage({ projectId, onBack, onError }: Props) {
         )}
         {summary && (
           <>
-            {summary.error && <div className="bad-text">{summary.error}</div>}
+            {summary.error && <div className="bad-text">{summary.error}{summary.errorCode ? ` (${summary.errorCode})` : ""}</div>}
+            {summary.advice && (
+              <div className="advice">
+                <div style={{ fontWeight: 800 }}>🤖 The AI chose: {summary.advice.layerHeightMm} mm layers · {summary.advice.infillPercent}% inside · supports {summary.advice.supports}{summary.advice.brim ? " · brim" : ""}{summary.advice.slicer ? ` · ${summary.advice.slicer}` : ""}</div>
+                <ul className="small" style={{ margin: "4px 0 0", paddingLeft: 18 }}>{summary.advice.reasons.slice(0, 4).map((r, i) => <li key={i}>{r}</li>)}</ul>
+              </div>
+            )}
             <div className="result-grid">
               <div className="stat-tile"><div className="k">Size</div><div className="v">{summary.size ? `${summary.size.x.toFixed(0)}×${summary.size.y.toFixed(0)}×${summary.size.z.toFixed(0)}` : "–"}<small> mm</small></div></div>
               <div className="stat-tile"><div className="k">Fits?</div><div className="v" style={{ color: summary.fits ? "var(--ok)" : "var(--bad)" }}>{summary.fits === undefined ? "–" : summary.fits ? "Yes ✅" : "No ❌"}</div></div>
@@ -108,7 +129,8 @@ export function PreparePage({ projectId, onBack, onError }: Props) {
             <div className="stat"><span className="muted">Layers</span><span>{est?.layerCount ?? "–"}</span></div>
             <div className="stat"><span className="muted">Printer file</span><span>{summary.gx.ok ? `${summary.gx.fileName} · ${summary.gx.verified ? "verified" : "unverified format"}` : summary.gx.reason ?? "not created"}</span></div>
             {summary.repairs.length > 0 && <div className="stat"><span className="muted">Repaired</span><span className="small">{summary.repairs.slice(0, 3).join(", ")}</span></div>}
-            {[...summary.issues, ...summary.warnings].slice(0, 4).map((w, i) => <div key={i} className="muted small warn-line">⚠ {w}</div>)}
+            {[...summary.issues, ...summary.warnings, ...(summary.advice?.warnings ?? [])].slice(0, 4).map((w, i) => <div key={i} className="muted small warn-line">⚠ {w}</div>)}
+            {summary.errorCode && !summary.error && <div className="muted small">Error code {summary.errorCode}</div>}
           </>
         )}
         <div className="row" style={{ marginTop: "auto", justifyContent: "space-between" }}>

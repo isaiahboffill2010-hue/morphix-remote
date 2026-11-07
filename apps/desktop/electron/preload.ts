@@ -41,6 +41,10 @@ const api: MorphixApi = {
   testGemini: () => ipcRenderer.invoke(IPC.testGemini),
 
   preparePrint: (versionId, settings) => ipcRenderer.invoke(IPC.preparePrint, versionId, settings),
+  machineCommand: (c) => ipcRenderer.invoke(IPC.machineCommand, c),
+  machineCapabilities: () => ipcRenderer.invoke(IPC.machineCapabilities),
+  jobs: () => ipcRenderer.invoke(IPC.jobs),
+  portalInfo: () => ipcRenderer.invoke(IPC.portalInfo),
   latestPrintJob: (projectId) => ipcRenderer.invoke(IPC.latestPrintJob, projectId),
   requestPrint: (jobId) => ipcRenderer.invoke(IPC.requestPrint, jobId),
   printStatus: () => ipcRenderer.invoke(IPC.printStatus),

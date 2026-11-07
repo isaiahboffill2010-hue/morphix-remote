@@ -14,9 +14,11 @@ bash scripts/pi/ensure-vision.sh || echo "WARNING: guardian Python setup failed;
 
 echo "== Morphix"
 bash scripts/pi/build-morphix.sh
+systemctl --user restart morphix.service
+sleep 8
 if systemctl --user is-active --quiet morphix.service; then
-  systemctl --user restart morphix.service
   echo "Morphix restarted with the new build"
 else
-  echo "Morphix built. Start it with: systemctl --user start morphix"
+  echo "WARNING: Morphix did not stay running; see: journalctl --user -u morphix -n 50"
+  exit 1
 fi

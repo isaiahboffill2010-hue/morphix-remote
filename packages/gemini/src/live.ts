@@ -220,6 +220,28 @@ export const MORPHIX_TOOLS: FunctionDeclaration[] = [
     },
   },
   { name: "request_print", description: "The user wants to print the prepared model. Proposes the print; it starts only after the user explicitly confirms." },
+  {
+    name: "printer_light",
+    description: "Turn the printer's light on or off.",
+    parameters: { type: "OBJECT", properties: { on: { type: "BOOLEAN" } }, required: ["on"] },
+  },
+  {
+    name: "printer_fan",
+    description: "Set the printer's cooling fan speed (0 = off, 100 = full).",
+    parameters: { type: "OBJECT", properties: { percent: { type: "NUMBER" } }, required: ["percent"] },
+  },
+  { name: "home_printer", description: "Move the print head to its home position. Not while printing." },
+  {
+    name: "set_temperature",
+    description: "Heat the nozzle or bed (e.g. to preheat or load filament). Only when the user clearly asks; limits apply.",
+    parameters: {
+      type: "OBJECT",
+      properties: { heater: { type: "STRING", enum: ["nozzle", "bed"] }, celsius: { type: "NUMBER" } },
+      required: ["heater", "celsius"],
+    },
+  },
+  { name: "cool_down", description: "Turn both heaters off." },
+  { name: "stop_printer", description: "Emergency stop: cancel the print and cool down. Only when the user clearly asks to stop." },
   { name: "pause_print", description: "Pause the running print (always allowed when printer control is enabled)." },
   { name: "cancel_print", description: "Cancel the running print. Ask the user to confirm first in conversation." },
 ];
@@ -234,6 +256,8 @@ How you work:
 - Never say a model is generating or ready unless a tool result or a [Morphix event] message says so.
 - When a model is ready, tell the user and ask how tall they want it. Use set_model_height for sizes like "six inches".
 - To print: call prepare_print first (free), tell the user the estimated time and filament, then call request_print when they want to print. request_print only proposes; the print starts after the user taps Confirm or clearly says yes (then call confirm_pending_action). Relay any "locked" or "not verified" message honestly.
+- You can also control the printer's light, fan, home position, heaters and emergency stop with the printer_* tools. Heating and stopping only when the user clearly asks. Some controls may be locked until a grown-up switches them on; say so kindly.
+- Many users are children: use simple, friendly words and keep safety first (never encourage touching the hot nozzle or bed).
 - Never say the printer started, paused or stopped unless a tool result says it was confirmed by the printer.
 - Messages that start with [Morphix event] come from the app, not the user. React to them briefly.`;
 

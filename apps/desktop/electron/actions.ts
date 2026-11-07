@@ -24,6 +24,9 @@ export interface PrintHook {
 
 export class Actions {
   private pending: PendingAction | null = null;
+  /** For custom proposals (photo jobs): what to run once confirmed. */
+  private onConfirm: ((source: "touch" | "voice" | "portal") => void) | null = null;
+  private onCancel: (() => void) | null = null;
   printer: PrintHook | null = null;
 
   constructor(private ctx: Ctx, private generation: Generation, private cost: CostConfig) {}
@@ -54,6 +57,10 @@ export class Actions {
   }
 
   clear(): void {
+    const cancel = this.onCancel;
+    this.onConfirm = null;
+    this.onCancel = null;
+    if (this.pending && cancel) cancel();
     this.pending = null;
     this.ctx.event({ type: "pending", action: null });
   }
@@ -81,6 +88,15 @@ export class Actions {
     });
   }
 
+  /** Any other paid/important action (e.g. a photo-to-model job). Runs `run` only after confirmation. */
+  proposeCustom(action: Omit<PendingAction, "id" | "createdAt">, run: (source: "touch" | "voice" | "portal") => void, onCancel?: () => void): PendingAction {
+    if (action.credits > 0) this.checkBudget();
+    const p = this.set(action);
+    this.onConfirm = run;
+    this.onCancel = onCancel ?? null;
+    return p;
+  }
+
   proposePrint(jobId: string): PendingAction {
     if (!this.printer) throw new PolicyError("printing is not available");
     try {
@@ -91,15 +107,25 @@ export class Actions {
   }
 
   /** Starts the pending job. `source` records how the user approved it. */
-  confirm(id: string, source: "touch" | "voice"): { projectId: string; taskId: string; action: PendingAction; printing?: Promise<void> } {
+  confirm(id: string, source: "touch" | "voice" | "portal"): { projectId: string; taskId: string; action: PendingAction; printing?: Promise<void> } {
     const action = this.current;
     if (!action || action.id !== id) throw new PolicyError("nothing is waiting for confirmation");
+    if (this.onConfirm) {
+      const run = this.onConfirm;
+      this.onConfirm = null;
+      this.onCancel = null;
+      this.pending = null;
+      this.ctx.event({ type: "pending", action: null });
+      this.ctx.log.write("info", "action confirmed", { kind: action.kind, credits: action.credits, source });
+      run(source);
+      return { projectId: action.projectId ?? "", taskId: "", action };
+    }
     if (action.kind === "print") {
       if (!this.printer || !action.jobId) throw new PolicyError("printing is not available");
       this.pending = null;
       this.ctx.event({ type: "pending", action: null });
       this.ctx.log.write("info", "print approved", { jobId: action.jobId, file: action.fileName, source });
-      return { projectId: action.projectId ?? "", taskId: "", action, printing: this.printer.start(action.jobId, source) };
+      return { projectId: action.projectId ?? "", taskId: "", action, printing: this.printer.start(action.jobId, source === "voice" ? "voice" : "touch") };
     }
     this.checkBudget();
     this.pending = null;

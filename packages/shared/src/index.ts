@@ -18,7 +18,7 @@ export interface ModelVersion {
   id: string;
   projectId: string;
   version: number;
-  source: "demo" | "meshy";
+  source: "demo" | "meshy" | "openscad" | "scan";
   kind: "demo" | "preview" | "refine";
   format: "stl" | "glb";
   /** URL the renderer can load (served by the local app server). */
@@ -147,15 +147,58 @@ export type AppEvent =
   | { type: "pending"; action: PendingAction | null }
   | { type: "navigate"; page: "viewer" | "library" | "assistant" | "prepare" | "printer"; projectId?: string }
   | { type: "model-height"; versionId: string; heightMm: number }
-  | { type: "notice"; level: "info" | "warn" | "error"; message: string }
+  | { type: "notice"; level: "info" | "warn" | "error"; message: string; code?: string; hint?: string }
+  | { type: "job"; job: JobView }
   | { type: "prepare-progress"; jobId: string; stage: string }
   | { type: "print-status"; status: PrintControlStatus }
   | { type: "guardian"; snapshot: GuardianView };
+
+/** Progress of one pipeline (text→print, photo→print, prepare, print) for the progress bar. */
+export interface JobView {
+  id: string;
+  kind: string;
+  title: string;
+  status: string;
+  percent: number;
+  currentStage: string | null;
+  stages: { key: string; label: string; status: string; progress: number; detail?: string }[];
+  error?: { code: string; title: string; hint: string } | null;
+  updatedAt: string;
+}
+
+export type MachineCommand =
+  | { cmd: "light"; on: boolean }
+  | { cmd: "fan"; percent: number }
+  | { cmd: "home" }
+  | { cmd: "nozzle"; celsius: number }
+  | { cmd: "bed"; celsius: number }
+  | { cmd: "cooldown" }
+  | { cmd: "motorsOff" }
+  | { cmd: "stop" };
+
+export interface MachineCapability {
+  command: string;
+  verified: boolean;
+  enabled: boolean;
+  allowedNow: boolean;
+  reason?: string;
+}
 
 export interface PrepareSettings {
   layerHeightMm: number;
   infillPercent: number;
   supports: "none" | "auto" | "buildplate";
+}
+
+export interface PrepareAdvice {
+  slicer: string | null;
+  layerHeightMm: number;
+  infillPercent: number;
+  supports: string;
+  brim: boolean;
+  reasons: string[];
+  warnings: string[];
+  source: "heuristic" | "gemini";
 }
 
 export interface PrepareSummary {
@@ -176,6 +219,8 @@ export interface PrepareSummary {
   estimates?: { printTimeS: number | null; filamentG: number | null; filamentMm: number | null; layerCount: number | null; source: string };
   gx: { ok: boolean; verified: boolean; fileName?: string; bytes?: number; reason?: string };
   previewUrl?: string | null;
+  advice?: PrepareAdvice;
+  errorCode?: string;
 }
 
 export interface PrintControlStatus {
@@ -250,7 +295,12 @@ export interface MorphixApi {
   meshyBalance(): Promise<{ balance: number } | { error: string }>;
   testGemini(): Promise<{ ok: boolean; message: string }>;
 
-  preparePrint(versionId: string, settings: PrepareSettings): Promise<PrepareSummary>;
+  /** settings "auto" = let the AI slicer advisor choose. */
+  preparePrint(versionId: string, settings: PrepareSettings | "auto"): Promise<PrepareSummary>;
+  machineCommand(command: MachineCommand): Promise<{ ok: boolean; message: string; code?: string }>;
+  machineCapabilities(): Promise<MachineCapability[]>;
+  jobs(): Promise<JobView[]>;
+  portalInfo(): Promise<{ running: boolean; url: string | null; authConfigured: boolean; missing: string[] }>;
   latestPrintJob(projectId: string): Promise<PrepareSummary | null>;
   requestPrint(jobId: string): Promise<void>;
   printStatus(): Promise<PrintControlStatus>;
@@ -293,6 +343,10 @@ export const IPC = {
   meshyBalance: "meshy:balance",
   testGemini: "gemini:test",
   preparePrint: "print:prepare",
+  machineCommand: "printer:machine",
+  machineCapabilities: "printer:capabilities",
+  jobs: "jobs:list",
+  portalInfo: "portal:info",
   latestPrintJob: "print:latest",
   requestPrint: "print:request",
   printStatus: "print:status",

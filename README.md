@@ -3,9 +3,20 @@
 AI-powered, voice-controlled 3D printing on a Raspberry Pi 4 + Afinia QD330.
 Speak → Gemini understands → Meshy generates → preview → choose size → approve → print → AI monitors.
 
-**Current status: Phase 1 (local foundation) built.** AI runs in clearly labelled demo mode until
-`GEMINI_API_KEY` / `MESHY_API_KEY` are added in Phase 2. Printer access is observation-only.
-See [docs/PHASES.md](docs/PHASES.md) and [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+**Status:** all five phases built and wired: Gemini Live voice, Meshy models, AI-advised local slicing
+(PrusaSlicer on the Pi), the AI Print Guardian, printer control (locked until validated), a kid-friendly
+touchscreen with light/dark mode, one progress bar for every job, `MX-…` error codes
+([docs/ERRORS.md](docs/ERRORS.md)), and an Auth0 web portal where you can send photos, drawings or a
+LiDAR scan of a broken part and get a printable copy ([docs/PORTAL.md](docs/PORTAL.md),
+[docs/PHOTO3D.md](docs/PHOTO3D.md)). See [docs/PHASES.md](docs/PHASES.md) and [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+
+### One-time setup on the Pi
+```
+sudo apt install -y prusa-slicer openscad      # local slicing + exact-size replacement parts
+nano ~/Morphix/config/morphix.env              # keys + Auth0 (see config/morphix.env.example)
+systemctl --user restart morphix
+```
+Portal: `http://192.168.86.38:8443` (same Wi-Fi).
 
 ## Repository
 ```
@@ -17,7 +28,12 @@ packages/storage        ~/Morphix layout, safe paths, atomic writes, logs
 packages/printer        QD330 observer (read-only command allowlist)
 packages/meshy          model generators (demo; Meshy in Phase 2)
 packages/gemini         assistants (demo; Gemini Live in Phase 2)
-packages/slicing        build-volume checks (slicing in Phase 3)
+packages/slicing        repair, orient, slice (PrusaSlicer/Orca), .gx, AI slicing advisor
+packages/photo3d        photos/drawings/scans → model (Gemini vision, Meshy image-to-3D, OpenSCAD)
+packages/portal         Auth0 web portal hosted by the Pi (port 8443)
+packages/jobs           one progress model for every pipeline
+packages/errors         MX-… error codes with kid-friendly titles and hints
+packages/guardian       AI Print Guardian (with services/vision)
 services/qd330-dashboard  Python web dashboard + CLI for the printer (port 8000)
 services/vision         Phase 4 vision worker (planned)
 config/                 printer profile, slicer profiles, env example

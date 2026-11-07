@@ -269,6 +269,27 @@ export class VoiceController {
         const p = this.actions.proposePrint(job.jobId);
         return { ok: true, status: "awaiting_user_confirmation", file: p.fileName, details: p.details, note: "Ask the user to tap Confirm or say yes." };
       }
+      case "printer_light":
+      case "printer_fan":
+      case "home_printer":
+      case "set_temperature":
+      case "cool_down":
+      case "stop_printer": {
+        const printing = this.opts.printing();
+        if (!printing) throw new PolicyError("printing is not available");
+        if (c.name === "stop_printer" && (this.turn?.system || !/\b(stop|cancel|abort|emergency)\b/i.test(this.turn?.user ?? ""))) {
+          return { ok: false, message: "Only stop when the user clearly asks to stop." };
+        }
+        if (c.name === "set_temperature" && this.turn?.system) return { ok: false, message: "Only heat when the user asks." };
+        const cmd =
+          c.name === "printer_light" ? { cmd: "light" as const, on: Boolean(a.on) }
+          : c.name === "printer_fan" ? { cmd: "fan" as const, percent: Number(a.percent ?? 100) }
+          : c.name === "home_printer" ? { cmd: "home" as const }
+          : c.name === "cool_down" ? { cmd: "cooldown" as const }
+          : c.name === "stop_printer" ? { cmd: "stop" as const }
+          : { cmd: (a.heater === "bed" ? "bed" : "nozzle") as "bed" | "nozzle", celsius: Number(a.celsius) };
+        return await printing.machine(cmd, "voice");
+      }
       case "pause_print": {
         const printing = this.opts.printing();
         if (!printing) throw new PolicyError("printing is not available");
