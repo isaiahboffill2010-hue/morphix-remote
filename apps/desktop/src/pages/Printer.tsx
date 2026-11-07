@@ -7,6 +7,10 @@ const ALERT_COLORS: Record<string, string> = {
   pause_confirmed: "var(--ok)", pause_unconfirmed: "var(--bad)",
 };
 
+const PHASE_LABEL: Record<string, string> = {
+  printing: "Printing", paused: "Paused", completed: "All done! 🎉", cancelled: "Cancelled", failed: "Stopped with a problem",
+};
+
 export function PrinterPage({ status, settings, onError }: { status: PrinterStatus | null; settings: AppSettings | null; onError: (m: string) => void }) {
   const [camError, setCamError] = useState(false);
   const [camKey, setCamKey] = useState(0);
@@ -70,6 +74,7 @@ export function PrinterPage({ status, settings, onError }: { status: PrinterStat
 
   const t = status?.temps;
   const job = control?.job;
+  const ended = job ? ["completed", "cancelled", "failed"].includes(job.phase) : false;
   const alert = guardian?.alert;
   return (
     <div className="printer">
@@ -90,16 +95,16 @@ export function PrinterPage({ status, settings, onError }: { status: PrinterStat
         </div>
       </div>
       <aside className="side">
-        {job && (
+        {job && job.phase !== "idle" && (
           <div className="card">
-            <h3>Printing now 🖨️</h3>
+            <h3>{ended ? "Last print" : "Printing now 🖨️"}</h3>
             <div className="row" style={{ justifyContent: "space-between" }}>
               <span className="small">{job.fileName}</span>
               <span style={{ fontWeight: 700 }}>{job.progress}%</span>
             </div>
             <div className="progress" style={{ margin: "8px 0" }}><div style={{ width: `${job.progress}%` }} /></div>
-            <div className="muted small">{job.phase}{job.layer[1] ? ` · layer ${job.layer[0]}/${job.layer[1]}` : ""}{job.offline ? " · printer offline" : ""}</div>
-            {control?.enabled ? (
+            <div className="muted small">{PHASE_LABEL[job.phase] ?? job.phase}{job.layer[1] ? ` · layer ${job.layer[0]}/${job.layer[1]}` : ""}{job.offline ? " · printer offline" : ""}</div>
+            {ended ? null : control?.enabled ? (
               <div className="row" style={{ marginTop: 8 }}>
                 <button className="btn" onClick={() => void act(api.pausePrint)}>Pause</button>
                 <button className="btn danger-btn" onClick={() => confirm("Cancel this print?") && void act(api.cancelPrint)}>Cancel</button>

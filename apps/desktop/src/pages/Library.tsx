@@ -2,11 +2,20 @@ import { useEffect, useState } from "react";
 import type { Project } from "@morphix/shared";
 import { api } from "../bridge";
 
-const STATE_LABEL: Partial<Record<Project["state"], string>> = {
+const STATE_LABEL: Record<Project["state"], string> = {
+  idea: "New idea",
+  clarification: "Needs an answer",
   generating: "Generating…",
   reviewing: "Ready to look at",
-  failed: "Failed",
-  sizing: "Sizing",
+  sizing: "Picking a size",
+  validating: "Checking it",
+  slicing: "Getting it ready…",
+  approval: "Ready to print",
+  uploading: "Sending to printer…",
+  ready: "On the printer",
+  printing: "Printing…",
+  completed: "Printed! 🎉",
+  failed: "Didn't work",
 };
 
 export function LibraryPage({ onOpen }: { onOpen: (id: string) => void }) {
