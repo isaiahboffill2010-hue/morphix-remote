@@ -95,8 +95,9 @@ export function ViewerPage({ projectId, onBrowse }: { projectId: string | null; 
             ))}
             <button className="btn" onClick={() => void nudge(-5)}>− 5 mm</button>
             <button className="btn" onClick={() => void nudge(5)}>+ 5 mm</button>
+            <button className="btn ghost" style={{ gridColumn: "1 / -1" }} onClick={() => setTarget(null)}>Original size</button>
           </div>
-          <button className="btn ghost" style={{ width: "100%", marginTop: 8 }} onClick={() => setTarget(null)}>Original size</button>
+
         </div>
       </aside>
     </div>
