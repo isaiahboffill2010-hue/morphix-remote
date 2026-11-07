@@ -6,7 +6,7 @@ import { api } from "../bridge";
 import { ModelViewer, type ModelSize } from "../components/ModelViewer";
 import { useTheme } from "../theme";
 
-const PRESETS: [string, number][] = [["Tiny · 2 in", 2 * MM_PER_INCH], ["Small · 3 in", 3 * MM_PER_INCH], ["Medium · 4 in", 4 * MM_PER_INCH], ["Big · 6 in", 6 * MM_PER_INCH]];
+const PRESETS: [string, number][] = [["Tiny 2″", 2 * MM_PER_INCH], ["Small 3″", 3 * MM_PER_INCH], ["Medium 4″", 4 * MM_PER_INCH], ["Big 6″", 6 * MM_PER_INCH]];
 const KIND_LABEL: Record<ModelVersion["kind"], string> = { demo: "Demo", preview: "Shape", refine: "Colour" };
 
 interface Props {

@@ -153,7 +153,21 @@ export function ModelViewer({ url, format, targetHeightMm, onMeasured, onError, 
         fail,
       );
     } else {
-      new GLTFLoader().load(url, (gltf) => place(gltf.scene), undefined, fail);
+      new GLTFLoader().load(
+        url,
+        (gltf) => {
+          // Untextured previews (e.g. Meshy shape-only) get the friendly Morphix colour.
+          gltf.scene.traverse((o) => {
+            const m = o as THREE.Mesh;
+            if (!m.isMesh) return;
+            const mats = Array.isArray(m.material) ? m.material : [m.material];
+            if (!mats.some((x) => (x as THREE.MeshStandardMaterial).map)) m.material = material;
+          });
+          place(gltf.scene);
+        },
+        undefined,
+        fail,
+      );
     }
     return () => {
       cancelled = true;
