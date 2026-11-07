@@ -1,0 +1,388 @@
+// Phases 3–5 in the main process: print preparation (repair, orient, slice, .gx),
+// printer control behind two operator switches + per-print approval, and the
+// AI Print Guardian watching the camera.
+import { randomUUID } from "node:crypto";
+import { existsSync } from "node:fs";
+import { homedir } from "node:os";
+import { join, relative, resolve, sep } from "node:path";
+import type { GuardianView, PendingAction, PrepareSettings, PrepareSummary, PrintControlStatus, PrinterStatus } from "@morphix/shared";
+import { transition, type WorkflowState } from "@morphix/domain";
+import { preparePrint } from "@morphix/slicing";
+import { JobTracker, PrintAuthorizer, QD330Controller, detectActivePrint, type ApprovalSource } from "@morphix/printer";
+import { PrintGuardian, applyGuardianSchema, geminiVisionFromEnv, type GuardianSnapshot, type GuardianStore } from "@morphix/guardian";
+import { type Ctx, now } from "./context";
+
+export interface PrintingOptions {
+  repoRoot: string;
+  printerHost: string;
+  controlsEnabled: boolean;
+  gxVerified: boolean;
+  pausedStatuses: string[];
+}
+
+const DEFAULT_SETTINGS: PrepareSettings = { layerHeightMm: 0.2, infillPercent: 15, supports: "auto" };
+
+/** Walks the workflow through intermediate states (e.g. reviewing -> sizing -> validating). */
+function walk(ctx: Ctx, projectId: string, path: WorkflowState[], flags: { printControlsEnabled?: boolean; userApproved?: boolean } = {}) {
+  const r = ctx.db.get("SELECT state FROM projects WHERE id = ?", [projectId]);
+  if (!r) return;
+  let state = r.state as WorkflowState;
+  for (const next of path) {
+    if (state === next) continue;
+    try {
+      state = transition(state, next, flags);
+    } catch {
+      continue; // skip steps that don't apply from the current state
+    }
+  }
+  ctx.db.run("UPDATE projects SET state = ?, updated_at = ? WHERE id = ?", [state, now(), projectId]);
+}
+
+export class Printing {
+  readonly controller: QD330Controller;
+  readonly tracker: JobTracker;
+  readonly guardian: PrintGuardian;
+  private authorizer = new PrintAuthorizer();
+  private busy: string | null = null;
+  private lastMessage: string | null = null;
+  private guardianRunning = false;
+  private activeJobId: string | null = null;
+
+  constructor(private ctx: Ctx, private o: PrintingOptions) {
+    this.controller = new QD330Controller({
+      enabled: o.controlsEnabled,
+      host: o.printerHost,
+      pausedStatuses: o.pausedStatuses,
+      authorizer: this.authorizer,
+      log: (e) => ctx.log.write(e.outcome === "confirmed" ? "info" : "warn", "printer-control", e),
+    });
+    this.tracker = new JobTracker({ pausedStatuses: o.pausedStatuses });
+    this.tracker.on("change", () => this.emitStatus());
+    for (const ev of ["completed", "cancelled", "failed"] as const) {
+      this.tracker.on(ev, (job) => {
+        ctx.log.write("info", `print ${ev}`, { jobId: job.jobId, file: job.fileName });
+        if (job.jobId) this.finishJob(job.jobId, ev);
+        if (this.guardianRunning) void this.guardianCommand("stop");
+      });
+    }
+
+    const python = process.env.MORPHIX_PYTHON || (existsSync(join(homedir(), ".local/share/morphix-vision/bin/python")) ? join(homedir(), ".local/share/morphix-vision/bin/python") : "python3");
+    this.guardian = new PrintGuardian({
+      storageRoot: ctx.storage.root,
+      visionDir: join(o.repoRoot, "services", "vision"),
+      worker: { pythonPath: python, snapshotUrl: `http://${o.printerHost}:8080/?action=snapshot`, intervalSeconds: 10 },
+      alerts: {
+        autoPause: false,
+        pauseHook: o.controlsEnabled
+          ? async (alert) => {
+              const r = await this.controller.pause({ requestedBy: "guardian", reason: alert.kind });
+              return { accepted: r.acknowledged, detail: r.error };
+            }
+          : undefined,
+      },
+      gemini: geminiVisionFromEnv(process.env),
+      store: this.store(),
+      log: (l) => ctx.log.write("info", `[guardian] ${l}`),
+    });
+    this.guardian.onUpdate((snap) => ctx.event({ type: "guardian", snapshot: this.view(snap) }));
+  }
+
+  /** Called once the database is open. */
+  init(): void {
+    applyGuardianSchema({ exec: (sql) => this.ctx.db.exec(sql) });
+  }
+
+  private store(): GuardianStore {
+    const db = () => this.ctx.db;
+    return {
+      sessionStarted: (s) => db().run("INSERT OR REPLACE INTO monitoring_sessions(id, print_job_id, started_at) VALUES (?,?,?)", [s.id, s.printJobId, s.startedAt]),
+      sessionEnded: (s) => db().run("UPDATE monitoring_sessions SET ended_at = ? WHERE id = ?", [s.endedAt ?? now(), s.id]),
+      alertChanged: (a, t) => {
+        db().run(
+          "INSERT OR REPLACE INTO failure_alerts(id, session_id, at, level, kind, confidence, snapshot_rel_path, detail) VALUES (?,?,?,?,?,?,?,?)",
+          [a.id, a.sessionId, a.updatedAt, a.state, a.kind, a.score, this.rel(a.evidence[a.evidence.length - 1]), JSON.stringify({ state: a.state, verifications: a.verifications })],
+        );
+        if (t) db().run("INSERT INTO alert_transitions(alert_id, at, from_state, to_state, reason) VALUES (?,?,?,?,?)", [a.id, t.at, t.from, t.to, t.reason ?? null]);
+      },
+      evidenceSaved: (e) =>
+        db().run("INSERT OR REPLACE INTO guardian_evidence(id, session_id, alert_id, at, label, kind, rel_path) VALUES (?,?,?,?,?,?,?)", [
+          e.id, e.sessionId, e.alertId, e.at, e.label, e.kind, e.relPath,
+        ]),
+    };
+  }
+
+  private rel(abs: string | undefined): string | null {
+    if (!abs) return null;
+    const p = resolve(abs);
+    return p.startsWith(this.ctx.storage.root + sep) ? relative(this.ctx.storage.root, p).split(sep).join("/") : null;
+  }
+
+  // -------------------------------------------------------------------------
+  // Phase 3 — print preparation
+
+  async prepare(versionId: string, settings: Partial<PrepareSettings> = {}): Promise<PrepareSummary> {
+    const { db, storage } = this.ctx;
+    const v = db.get("SELECT * FROM model_versions WHERE id = ?", [versionId]);
+    if (!v) throw new Error("model not found");
+    if (this.busy) throw new Error(`busy: ${this.busy}`);
+    const s: PrepareSettings = { ...DEFAULT_SETTINGS, ...settings };
+    const projectId = String(v.project_id);
+    const jobId = randomUUID();
+    const outDir = storage.path("prints", jobId);
+    const t = now();
+    db.run("INSERT INTO print_jobs(id, project_id, version_id, state, settings_json, created_at, updated_at) VALUES (?,?,?,?,?,?,?)", [
+      jobId, projectId, versionId, "preparing", JSON.stringify(s), t, t,
+    ]);
+    walk(this.ctx, projectId, ["sizing", "validating"]);
+    this.busy = "preparing print";
+    const main = storage.path(String(v.rel_path));
+    const isGlb = String(v.format) === "glb";
+    const target = v.target_height_mm == null ? null : Number(v.target_height_mm);
+    let summary: PrepareSummary;
+    try {
+      const r = await preparePrint({
+        inputPath: main,
+        targetHeightMm: target,
+        options: {
+          supports: s.supports,
+          layerHeightMm: s.layerHeightMm,
+          infillPercent: s.infillPercent,
+          outputDir: outDir,
+          baseName: "model",
+          profilesDir: join(this.o.repoRoot, "config", "slicer-profiles"),
+          ...(isGlb ? {} : v.source === "meshy" ? { upAxis: "auto" as const } : { upAxis: "z" as const }),
+          onProgress: (stage) => {
+            this.ctx.event({ type: "prepare-progress", jobId, stage });
+            if (stage === "slice") walk(this.ctx, projectId, ["slicing"]);
+          },
+        },
+      });
+      const fileName = `morphix-${jobId.slice(0, 8)}.gx`;
+      summary = {
+        jobId, projectId, versionId, createdAt: t, settings: s, ok: r.ok && r.fits.fits,
+        size: r.size, fits: r.fits.fits, upAxis: r.upAxis.axis,
+        repairs: r.repair ? describeRepair(r.repair as unknown as Record<string, unknown>) : [],
+        issues: r.report.final.issues ?? [],
+        warnings: r.warnings,
+        slicer: r.slicer.ok ? { ok: true, name: (r.slicer as { slicer?: { name?: string; version?: string } }).slicer?.name } : { ok: false, reason: r.slicer.reason, message: r.slicer.message },
+        estimates: { printTimeS: r.estimates.printTimeS, filamentG: r.estimates.filamentG, filamentMm: r.estimates.filamentMm, layerCount: r.estimates.layerCount, source: r.estimates.source },
+        gx: r.gx.ok ? { ok: true, verified: r.gx.verified, fileName, bytes: r.gx.buffer.length } : { ok: false, verified: false, reason: r.gx.message },
+        previewUrl: null,
+      };
+      db.run("UPDATE print_jobs SET state = ?, file_rel_path = ?, summary_json = ?, updated_at = ? WHERE id = ?", [
+        summary.ok ? "ready_for_approval" : "prepare_incomplete", r.files.gx ? storage.relative(r.files.gx) : null, JSON.stringify(summary), now(), jobId,
+      ]);
+      walk(this.ctx, projectId, summary.ok ? ["slicing", "approval"] : ["sizing"]);
+      this.ctx.log.write("info", "print prepared", { jobId, ok: summary.ok, slicer: summary.slicer, fits: summary.fits, estimates: summary.estimates });
+    } catch (e) {
+      summary = {
+        jobId, projectId, versionId, createdAt: t, settings: s, ok: false, error: (e as Error).message,
+        repairs: [], issues: [], warnings: [], slicer: { ok: false, reason: "error", message: (e as Error).message }, gx: { ok: false, verified: false },
+      };
+      db.run("UPDATE print_jobs SET state = 'prepare_failed', summary_json = ?, updated_at = ? WHERE id = ?", [JSON.stringify(summary), now(), jobId]);
+      walk(this.ctx, projectId, ["sizing"]);
+      this.ctx.log.write("error", "print prepare failed", { jobId, error: (e as Error).message });
+    } finally {
+      this.busy = null;
+      db.flush();
+    }
+    return summary;
+  }
+
+  latest(projectId: string): PrepareSummary | null {
+    const r = this.ctx.db.get("SELECT summary_json FROM print_jobs WHERE project_id = ? AND summary_json IS NOT NULL ORDER BY created_at DESC LIMIT 1", [projectId]);
+    return r ? (JSON.parse(String(r.summary_json)) as PrepareSummary) : null;
+  }
+
+  // -------------------------------------------------------------------------
+  // Phase 5 — printing (two operator switches + explicit approval per print)
+
+  status(): PrintControlStatus {
+    const j = this.tracker.job;
+    return {
+      enabled: this.o.controlsEnabled,
+      gxVerified: this.o.gxVerified,
+      job: j.phase === "idle" ? null : { jobId: j.jobId, fileName: j.fileName, phase: j.phase, progress: j.progress, layer: j.layer, recovered: j.recovered, offline: j.offline },
+      busy: this.busy,
+      lastMessage: this.lastMessage,
+    };
+  }
+
+  private emitStatus(): void {
+    this.ctx.event({ type: "print-status", status: this.status() });
+  }
+
+  /** Checks a print may be proposed; returns the details for the confirmation screen. */
+  printProposal(jobId: string): Omit<PendingAction, "id" | "createdAt"> {
+    if (!this.o.controlsEnabled) {
+      throw new Error("Printer control is locked. It is switched on only after the operator validation checklist (MORPHIX_PRINT_CONTROLS=1).");
+    }
+    const r = this.ctx.db.get("SELECT * FROM print_jobs WHERE id = ?", [jobId]);
+    if (!r?.summary_json || !r.file_rel_path) throw new Error("prepare the model for printing first");
+    const s = JSON.parse(String(r.summary_json)) as PrepareSummary;
+    if (!s.ok || !s.gx.ok || !s.gx.fileName) throw new Error("this print job isn't ready (see the preparation report)");
+    if (!s.gx.verified && !this.o.gxVerified) {
+      throw new Error("Morphix's .gx output hasn't been verified against the official Afinia slicer yet (MORPHIX_GX_VERIFIED=1 after checking).");
+    }
+    if (this.tracker.active) throw new Error("the printer is already printing");
+    const project = this.ctx.db.get("SELECT title FROM projects WHERE id = ?", [r.project_id]);
+    const est = s.estimates;
+    return {
+      kind: "print", title: String(project?.title ?? "model"), prompt: `Send ${s.gx.fileName} to the QD330 and start printing.`,
+      projectId: String(r.project_id), versionId: String(r.version_id), credits: 0, jobId, fileName: s.gx.fileName,
+      details: [
+        s.size ? `${s.size.x.toFixed(0)} × ${s.size.y.toFixed(0)} × ${s.size.z.toFixed(0)} mm` : "",
+        est?.printTimeS ? `about ${formatDuration(est.printTimeS)}` : "",
+        est?.filamentG ? `${est.filamentG.toFixed(0)} g filament` : "",
+        "Check the bed is clear and filament is loaded.",
+      ].filter(Boolean),
+    };
+  }
+
+  /** Runs only from a confirmed pending action (touch tap or verified spoken yes). */
+  async startApprovedPrint(jobId: string, approvedBy: ApprovalSource): Promise<void> {
+    const proposal = this.printProposal(jobId); // re-check every precondition
+    const fileName = proposal.fileName!;
+    const r = this.ctx.db.get("SELECT * FROM print_jobs WHERE id = ?", [jobId])!;
+    const data = this.ctx.storage.read(this.ctx.storage.path(String(r.file_rel_path)));
+    const auth = this.authorizer.authorize({ jobId, fileName, approvedBy, expiresInMs: 180_000 });
+    const projectId = String(r.project_id);
+    this.busy = "sending file to printer";
+    this.emitStatus();
+    try {
+      this.ctx.db.run("UPDATE print_jobs SET state = 'uploading', approved_at = ?, updated_at = ? WHERE id = ?", [now(), now(), jobId]);
+      walk(this.ctx, projectId, ["uploading"], { printControlsEnabled: true, userApproved: true });
+      const up = await this.controller.uploadFile(fileName, data, { jobId, authorization: auth });
+      if (!up.confirmed) throw new Error(`upload not confirmed: ${up.error ?? up.reply ?? "no reply"}`);
+      walk(this.ctx, projectId, ["ready"], { printControlsEnabled: true, userApproved: true });
+      this.busy = "starting print";
+      this.emitStatus();
+      const start = await this.controller.startPrint({ jobId, fileName, authorization: auth });
+      if (!start.confirmed) throw new Error(`print start not confirmed: ${start.error ?? "printer did not report printing"}`);
+      this.tracker.track({ jobId, fileName, status: start.status });
+      this.activeJobId = jobId;
+      walk(this.ctx, projectId, ["printing"], { printControlsEnabled: true, userApproved: true });
+      this.ctx.db.run("UPDATE print_jobs SET state = 'printing', updated_at = ? WHERE id = ?", [now(), jobId]);
+      this.lastMessage = `Printing ${fileName}`;
+      if (!this.guardianRunning) void this.guardianCommand("start");
+    } catch (e) {
+      this.lastMessage = (e as Error).message;
+      this.ctx.db.run("UPDATE print_jobs SET state = 'failed', updated_at = ? WHERE id = ?", [now(), jobId]);
+      walk(this.ctx, projectId, ["failed"], { printControlsEnabled: true });
+      throw e;
+    } finally {
+      this.busy = null;
+      this.ctx.db.flush();
+      this.emitStatus();
+    }
+  }
+
+  private finishJob(jobId: string, outcome: "completed" | "cancelled" | "failed"): void {
+    const r = this.ctx.db.get("SELECT project_id FROM print_jobs WHERE id = ?", [jobId]);
+    this.ctx.db.run("UPDATE print_jobs SET state = ?, updated_at = ? WHERE id = ?", [outcome, now(), jobId]);
+    if (r) walk(this.ctx, String(r.project_id), [outcome === "completed" ? "completed" : "failed"], { printControlsEnabled: true });
+    this.activeJobId = null;
+    this.emitStatus();
+  }
+
+  async pause(): Promise<{ ok: boolean; message: string }> {
+    if (!this.o.controlsEnabled) return { ok: false, message: "Printer control is locked — press pause on the printer itself." };
+    const r = await this.controller.pause({ requestedBy: "touch", reason: "operator" });
+    this.lastMessage = r.confirmed ? "Printer confirmed paused" : `Pause not confirmed${r.error ? `: ${r.error}` : ""} — use the printer's screen if it keeps printing.`;
+    this.emitStatus();
+    return { ok: r.confirmed, message: this.lastMessage };
+  }
+
+  async cancel(): Promise<{ ok: boolean; message: string }> {
+    if (!this.o.controlsEnabled) return { ok: false, message: "Printer control is locked — cancel on the printer itself." };
+    this.tracker.noteCancelRequested();
+    const r = await this.controller.cancel({ requestedBy: "touch", reason: "operator" });
+    this.lastMessage = r.confirmed ? "Printer confirmed the print was cancelled" : `Cancel not confirmed${r.error ? `: ${r.error}` : ""} — use the printer's screen.`;
+    this.emitStatus();
+    return { ok: r.confirmed, message: this.lastMessage };
+  }
+
+  /** Every observer poll: job tracking, guardian stall/pause confirmation, auto-start monitoring. */
+  onPrinterStatus(s: PrinterStatus): void {
+    this.tracker.update(s);
+    if (s.online) {
+      this.guardian.updatePrinterStatus(s as never);
+      const active = detectActivePrint(s, this.o.pausedStatuses);
+      if (active && !this.guardianRunning) void this.guardianCommand("start");
+    }
+  }
+
+  // -------------------------------------------------------------------------
+  // Phase 4 — guardian
+
+  view(snap: GuardianSnapshot = this.guardian.snapshot()): GuardianView {
+    const a = snap.alert;
+    const verification = a?.verifications?.[a.verifications.length - 1] as { explanation?: string; summary?: string } | undefined;
+    return {
+      running: this.guardianRunning,
+      state: snap.state,
+      label: snap.label,
+      camera: snap.camera,
+      cameraDetail: snap.cameraDetail,
+      worker: typeof snap.worker === "string" ? snap.worker : JSON.stringify(snap.worker),
+      alert: a
+        ? {
+            id: a.id, kind: a.kind, state: a.state, score: a.score, openedAt: a.openedAt,
+            evidenceUrls: a.evidence.map((p) => this.ctx.url(this.rel(p))).filter((u): u is string => Boolean(u)).slice(-3),
+            explanation: verification?.explanation ?? verification?.summary,
+          }
+        : null,
+      gemini: snap.gemini.available,
+      autoPause: snap.autoPause,
+      pauseAvailable: this.o.controlsEnabled,
+    };
+  }
+
+  async guardianCommand(cmd: "start" | "stop" | "requestPause" | "resolve" | "dismiss" | "resetBaseline"): Promise<GuardianView> {
+    switch (cmd) {
+      case "start":
+        if (!this.guardianRunning) {
+          this.guardian.start({ printJobId: this.activeJobId ?? undefined });
+          this.guardianRunning = true;
+        }
+        break;
+      case "stop":
+        if (this.guardianRunning) {
+          this.guardianRunning = false;
+          await this.guardian.stop("stopped by operator");
+        }
+        break;
+      case "requestPause":
+        await this.guardian.requestPause();
+        break;
+      case "resolve":
+        this.guardian.resolve("operator");
+        break;
+      case "dismiss":
+        this.guardian.dismiss("operator: false alarm");
+        break;
+      case "resetBaseline":
+        this.guardian.resetBaseline();
+        break;
+    }
+    const v = this.view();
+    this.ctx.event({ type: "guardian", snapshot: v });
+    return v;
+  }
+
+  async shutdown(): Promise<void> {
+    if (this.guardianRunning) await this.guardian.stop("app quit");
+  }
+}
+
+function describeRepair(r: Record<string, unknown>): string[] {
+  return Object.entries(r)
+    .filter(([, v]) => typeof v === "number" && v > 0)
+    .map(([k, v]) => `${k.replace(/([A-Z])/g, " $1").toLowerCase()}: ${v}`);
+}
+
+export function formatDuration(s: number): string {
+  const h = Math.floor(s / 3600);
+  const m = Math.round((s % 3600) / 60);
+  return h ? `${h} h ${m} min` : `${m} min`;
+}

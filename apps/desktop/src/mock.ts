@@ -29,7 +29,7 @@ export function createMockApi(): MorphixApi {
   return {
     getSettings: async () => ({
       storageRoot: "(browser preview)",
-      ai: { assistant: "demo", geminiModel: "gemini-3.8-live", generator: "demo", meshyModel: "meshy-6", previewCredits: 0, refineCredits: 0, dailyLimit: 15, usedToday: 0 }, printerHost: "192.168.10.51",
+      ai: { assistant: "missing", geminiModel: "gemini-3.8-live", generator: "missing", meshyModel: "meshy-6", previewCredits: 0, refineCredits: 0, dailyLimit: 15, usedToday: 0 }, printerHost: "192.168.10.51",
       cameraStreamUrl: "http://192.168.10.51:8080/?action=stream", cameraSnapshotUrl: "http://192.168.10.51:8080/?action=snapshot",
       printerPollSeconds: 5, demoMode: true,
       keys: { gemini: false, meshy: false, vultr: false, tiger: false, swarms: false, auth0: false },
@@ -96,6 +96,20 @@ export function createMockApi(): MorphixApi {
     requestRefine: async () => {},
     meshyBalance: async () => ({ error: "preview" }),
     testGemini: async () => ({ ok: false, message: "preview" }),
+    preparePrint: async (versionId, settings) => ({
+      jobId: "job-1", projectId: "p", versionId, createdAt: t(), settings, ok: true, size: { x: 42, y: 40, z: 101.6 }, fits: true, upAxis: "y",
+      repairs: ["welded vertices: 1204"], issues: [], warnings: ["The .gx layout is unverified against Afinia output."],
+      slicer: { ok: false, reason: "slicer-not-installed", message: "PrusaSlicer is not installed (sudo apt install prusa-slicer)" },
+      estimates: { printTimeS: 7260, filamentG: 18.4, filamentMm: 6170, layerCount: 508, source: "mesh-heuristic" },
+      gx: { ok: false, verified: false, reason: "needs sliced G-code" }, previewUrl: null,
+    }),
+    latestPrintJob: async () => null,
+    requestPrint: async () => {},
+    printStatus: async () => ({ enabled: false, gxVerified: false, job: null, busy: null, lastMessage: null }),
+    pausePrint: async () => ({ ok: false, message: "preview" }),
+    cancelPrint: async () => ({ ok: false, message: "preview" }),
+    guardian: async () => ({ running: false, state: "idle", label: "Not monitoring", camera: "unknown", worker: "stopped", alert: null, gemini: false, autoPause: false, pauseAvailable: false }),
+    guardianCommand: async () => ({ running: true, state: "monitoring", label: "Watching the print", camera: "ok", worker: "running", alert: null, gemini: false, autoPause: false, pauseAvailable: false }),
     networkStatus: async () => ({ hostname: "3dAImodel", wifi: { device: "wlan0", state: "connected", ssid: "hatsv2", ip: "192.168.86.38/24", signal: 72 }, ethernet: { device: "eth0", state: "connected", connection: "printer-lan", ip: "192.168.10.1/24" } }),
     wifiScan: async () => [
       { ssid: "hatsv2", signal: 72, security: "WPA2", inUse: true, saved: true },

@@ -17,8 +17,14 @@ export interface CostConfig {
 
 export class PolicyError extends Error {}
 
+export interface PrintHook {
+  proposal(jobId: string): Omit<PendingAction, "id" | "createdAt">;
+  start(jobId: string, approvedBy: "touch" | "voice"): Promise<void>;
+}
+
 export class Actions {
   private pending: PendingAction | null = null;
+  printer: PrintHook | null = null;
 
   constructor(private ctx: Ctx, private generation: Generation, private cost: CostConfig) {}
 
@@ -75,10 +81,26 @@ export class Actions {
     });
   }
 
+  proposePrint(jobId: string): PendingAction {
+    if (!this.printer) throw new PolicyError("printing is not available");
+    try {
+      return this.set(this.printer.proposal(jobId));
+    } catch (e) {
+      throw new PolicyError((e as Error).message);
+    }
+  }
+
   /** Starts the pending job. `source` records how the user approved it. */
-  confirm(id: string, source: "touch" | "voice"): { projectId: string; taskId: string; action: PendingAction } {
+  confirm(id: string, source: "touch" | "voice"): { projectId: string; taskId: string; action: PendingAction; printing?: Promise<void> } {
     const action = this.current;
     if (!action || action.id !== id) throw new PolicyError("nothing is waiting for confirmation");
+    if (action.kind === "print") {
+      if (!this.printer || !action.jobId) throw new PolicyError("printing is not available");
+      this.pending = null;
+      this.ctx.event({ type: "pending", action: null });
+      this.ctx.log.write("info", "print approved", { jobId: action.jobId, file: action.fileName, source });
+      return { projectId: action.projectId ?? "", taskId: "", action, printing: this.printer.start(action.jobId, source) };
+    }
     this.checkBudget();
     this.pending = null;
     this.ctx.event({ type: "pending", action: null });

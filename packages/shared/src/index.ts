@@ -85,9 +85,9 @@ export interface RecordingResult {
 }
 
 export interface AiStatus {
-  assistant: "gemini-live" | "demo";
+  assistant: "gemini-live" | "missing";
   geminiModel: string;
-  generator: "meshy" | "demo";
+  generator: "meshy" | "missing";
   meshyModel: string;
   previewCredits: number;
   refineCredits: number;
@@ -121,7 +121,11 @@ export interface SystemInfo {
 /** An action that costs money or changes things; waits for the user's explicit OK. */
 export interface PendingAction {
   id: string;
-  kind: "generate" | "refine";
+  kind: "generate" | "refine" | "print";
+  /** Print jobs: the prepared job and the file that will be sent. */
+  jobId?: string;
+  fileName?: string;
+  details?: string[];
   title: string;
   prompt: string;
   projectId: string | null;
@@ -141,9 +145,62 @@ export type VoiceEvent =
 
 export type AppEvent =
   | { type: "pending"; action: PendingAction | null }
-  | { type: "navigate"; page: "viewer" | "library" | "assistant"; projectId?: string }
+  | { type: "navigate"; page: "viewer" | "library" | "assistant" | "prepare" | "printer"; projectId?: string }
   | { type: "model-height"; versionId: string; heightMm: number }
-  | { type: "notice"; level: "info" | "warn" | "error"; message: string };
+  | { type: "notice"; level: "info" | "warn" | "error"; message: string }
+  | { type: "prepare-progress"; jobId: string; stage: string }
+  | { type: "print-status"; status: PrintControlStatus }
+  | { type: "guardian"; snapshot: GuardianView };
+
+export interface PrepareSettings {
+  layerHeightMm: number;
+  infillPercent: number;
+  supports: "none" | "auto" | "buildplate";
+}
+
+export interface PrepareSummary {
+  jobId: string;
+  projectId: string;
+  versionId: string;
+  createdAt: string;
+  settings: PrepareSettings;
+  ok: boolean;
+  error?: string;
+  size?: { x: number; y: number; z: number };
+  fits?: boolean;
+  upAxis?: string;
+  repairs: string[];
+  issues: string[];
+  warnings: string[];
+  slicer: { ok: boolean; name?: string; reason?: string; message?: string };
+  estimates?: { printTimeS: number | null; filamentG: number | null; filamentMm: number | null; layerCount: number | null; source: string };
+  gx: { ok: boolean; verified: boolean; fileName?: string; bytes?: number; reason?: string };
+  previewUrl?: string | null;
+}
+
+export interface PrintControlStatus {
+  /** Printer control switched on by the operator (MORPHIX_PRINT_CONTROLS=1). */
+  enabled: boolean;
+  /** Generated .gx files may be sent (MORPHIX_GX_VERIFIED=1 after comparing with Afinia output). */
+  gxVerified: boolean;
+  job: { jobId?: string; fileName?: string; phase: string; progress: number; layer: [number, number]; recovered: boolean; offline: boolean } | null;
+  busy: string | null;
+  lastMessage: string | null;
+}
+
+/** Plain-JSON view of the AI Print Guardian for the UI. */
+export interface GuardianView {
+  running: boolean;
+  state: string;
+  label: string;
+  camera: string;
+  cameraDetail?: string;
+  worker: string;
+  alert: { id: string; kind: string; state: string; score: number; openedAt: string; evidenceUrls: string[]; explanation?: string } | null;
+  gemini: boolean;
+  autoPause: boolean;
+  pauseAvailable: boolean;
+}
 
 export interface WifiNetwork {
   ssid: string;
@@ -193,6 +250,15 @@ export interface MorphixApi {
   meshyBalance(): Promise<{ balance: number } | { error: string }>;
   testGemini(): Promise<{ ok: boolean; message: string }>;
 
+  preparePrint(versionId: string, settings: PrepareSettings): Promise<PrepareSummary>;
+  latestPrintJob(projectId: string): Promise<PrepareSummary | null>;
+  requestPrint(jobId: string): Promise<void>;
+  printStatus(): Promise<PrintControlStatus>;
+  pausePrint(): Promise<{ ok: boolean; message: string }>;
+  cancelPrint(): Promise<{ ok: boolean; message: string }>;
+  guardian(): Promise<GuardianView>;
+  guardianCommand(cmd: "start" | "stop" | "requestPause" | "resolve" | "dismiss" | "resetBaseline"): Promise<GuardianView>;
+
   networkStatus(): Promise<NetworkStatus>;
   wifiScan(): Promise<WifiNetwork[]>;
   wifiConnect(ssid: string, password: string | null): Promise<{ ok: boolean; message: string }>;
@@ -226,6 +292,14 @@ export const IPC = {
   requestRefine: "actions:refine",
   meshyBalance: "meshy:balance",
   testGemini: "gemini:test",
+  preparePrint: "print:prepare",
+  latestPrintJob: "print:latest",
+  requestPrint: "print:request",
+  printStatus: "print:status",
+  pausePrint: "print:pause",
+  cancelPrint: "print:cancel",
+  guardian: "guardian:get",
+  guardianCommand: "guardian:command",
   networkStatus: "network:status",
   wifiScan: "network:scan",
   wifiConnect: "network:connect",

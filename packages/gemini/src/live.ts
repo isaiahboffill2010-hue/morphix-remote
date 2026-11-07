@@ -206,8 +206,22 @@ export const MORPHIX_TOOLS: FunctionDeclaration[] = [
       required: ["value", "unit"],
     },
   },
-  { name: "get_app_state", description: "Get the current project, model size, pending action, and credit balance." },
-  { name: "request_print", description: "The user wants to print the current model." },
+  { name: "get_app_state", description: "Get the current project, model size, print preparation, printer status, pending action, and credit balance." },
+  {
+    name: "prepare_print",
+    description: "Prepare the current model for printing: repair, orient, slice and estimate time/filament. Free; no confirmation needed.",
+    parameters: {
+      type: "OBJECT",
+      properties: {
+        quality: { type: "STRING", enum: ["draft", "normal", "fine"], description: "Layer height: draft 0.28 mm, normal 0.2 mm, fine 0.12 mm." },
+        infill_percent: { type: "NUMBER", description: "Infill 5-60 percent. Default 15." },
+        supports: { type: "STRING", enum: ["none", "auto", "buildplate"] },
+      },
+    },
+  },
+  { name: "request_print", description: "The user wants to print the prepared model. Proposes the print; it starts only after the user explicitly confirms." },
+  { name: "pause_print", description: "Pause the running print (always allowed when printer control is enabled)." },
+  { name: "cancel_print", description: "Cancel the running print. Ask the user to confirm first in conversation." },
 ];
 
 export const MORPHIX_SYSTEM_INSTRUCTION = `You are Morphix, the friendly voice of an AI 3D printer on a Raspberry Pi touchscreen.
@@ -219,7 +233,8 @@ How you work:
 - generate_model and revise_model only PROPOSE the job. Tell the user the credit cost from the tool result and ask them to say yes or tap Confirm. Only call confirm_pending_action after they clearly say yes.
 - Never say a model is generating or ready unless a tool result or a [Morphix event] message says so.
 - When a model is ready, tell the user and ask how tall they want it. Use set_model_height for sizes like "six inches".
-- Printing is not available yet in this version. If asked to print, call request_print and relay its answer. Never claim to control the printer.
+- To print: call prepare_print first (free), tell the user the estimated time and filament, then call request_print when they want to print. request_print only proposes; the print starts after the user taps Confirm or clearly says yes (then call confirm_pending_action). Relay any "locked" or "not verified" message honestly.
+- Never say the printer started, paused or stopped unless a tool result says it was confirmed by the printer.
 - Messages that start with [Morphix event] come from the app, not the user. React to them briefly.`;
 
 /** Deterministic check that the user's own words were a clear "yes". */

@@ -8,8 +8,10 @@ import { LibraryPage } from "./pages/Library";
 import { ViewerPage } from "./pages/Viewer";
 import { PrinterPage } from "./pages/Printer";
 import { SettingsPage } from "./pages/Settings";
+import { PreparePage } from "./pages/Prepare";
 
-export type Page = "assistant" | "library" | "viewer" | "printer" | "settings";
+export type Page = "assistant" | "library" | "viewer" | "prepare" | "printer" | "settings";
+type RailPage = Exclude<Page, "prepare">;
 export type VoiceState = Extract<VoiceEvent, { type: "status" }>["state"] | "listening";
 
 export interface Voice {
@@ -27,14 +29,14 @@ export interface Voice {
   setProposal: (p: string | null) => void;
 }
 
-const ICONS: Record<Page, ReactNode> = {
+const ICONS: Record<RailPage, ReactNode> = {
   assistant: <path d="M12 3a3 3 0 0 0-3 3v6a3 3 0 0 0 6 0V6a3 3 0 0 0-3-3Zm-7 9a7 7 0 0 0 14 0M12 19v3" />,
   library: <path d="M4 5h6v6H4zM14 5h6v6h-6zM4 15h6v4H4zM14 15h6v4h-6z" />,
   viewer: <path d="M12 2 3 7v10l9 5 9-5V7l-9-5Zm0 0v20M3 7l9 5 9-5" />,
   printer: <path d="M6 9V3h12v6M6 18H4v-7a2 2 0 0 1 2-2h12a2 2 0 0 1 2 2v7h-2M8 14h8v7H8z" />,
   settings: <path d="M12 15a3 3 0 1 0 0-6 3 3 0 0 0 0 6Zm7.4-3a7.4 7.4 0 0 0-.1-1.2l2-1.6-2-3.4-2.4 1a7.6 7.6 0 0 0-2-1.2L14.5 3h-4l-.4 2.6a7.6 7.6 0 0 0-2 1.2l-2.4-1-2 3.4 2 1.6a7.4 7.4 0 0 0 0 2.4l-2 1.6 2 3.4 2.4-1c.6.5 1.3.9 2 1.2l.4 2.6h4l.4-2.6c.7-.3 1.4-.7 2-1.2l2.4 1 2-3.4-2-1.6c.1-.4.1-.8.1-1.2Z" />,
 };
-const LABELS: Record<Page, string> = { assistant: "Create", library: "Library", viewer: "Viewer", printer: "Printer", settings: "Settings" };
+const LABELS: Record<RailPage, string> = { assistant: "Create", library: "Library", viewer: "Viewer", printer: "Printer", settings: "Settings" };
 const STATE_TEXT: Record<VoiceState, string> = {
   idle: "Hold to talk", ready: "Hold to talk", listening: "Listening… release to send", connecting: "Connecting to Gemini…",
   thinking: "Thinking…", speaking: "Speaking… hold to interrupt", offline: "Hold to talk",
@@ -170,6 +172,10 @@ export function App() {
 
   const startTalk = useCallback(async () => {
     if (ptt.current?.active) return;
+    if (!live) {
+      showNotice("Gemini isn't set up yet: add GEMINI_API_KEY to ~/Morphix/config/morphix.env and restart Morphix.");
+      return;
+    }
     out.current.stop(); // barge-in: stop Gemini speaking
     try {
       ptt.current = new PushToTalk(setLevel);
@@ -188,16 +194,8 @@ export function App() {
         setState("idle");
         return;
       }
-      if (live) {
-        setState("thinking");
-        await api.voiceTurn(pcm, sampleRate);
-      } else {
-        setState("thinking");
-        const r = await api.submitRecording(pcm, sampleRate);
-        setTurns((t) => [...t, r.turn, r.reply]);
-        if (r.proposedPrompt) setProposal(r.proposedPrompt);
-        setState("idle");
-      }
+      setState("thinking");
+      await api.voiceTurn(pcm, sampleRate);
     } catch (e) {
       showNotice((e as Error).message);
       setState("idle");
@@ -207,13 +205,8 @@ export function App() {
   const sendText = useCallback(
     async (text: string) => {
       try {
-        if (live) {
-          await api.voiceText(text);
-        } else {
-          const r = await api.sendText(text);
-          setTurns((t) => [...t, r.turn, r.reply]);
-          if (r.proposedPrompt) setProposal(r.proposedPrompt);
-        }
+        if (!live) throw new Error("Gemini isn't set up yet: add GEMINI_API_KEY to ~/Morphix/config/morphix.env and restart Morphix.");
+        await api.voiceText(text);
       } catch (e) {
         showNotice((e as Error).message);
       }
@@ -235,7 +228,7 @@ export function App() {
   const pText = !printer ? "Printer…" : printer.online ? `QD330 · ${(printer.machine ?? "online").replaceAll("_", " ").toLowerCase()}` : "QD330 offline";
   const aiChip = !settings ? null : settings.ai.assistant === "gemini-live" && settings.ai.generator === "meshy"
     ? <span className="chip"><span className={`dot ${state === "offline" ? "bad" : "ok"}`} />Gemini + Meshy</span>
-    : <span className="chip"><span className="dot warn" />{settings.ai.assistant === "gemini-live" ? "Gemini · demo models" : settings.ai.generator === "meshy" ? "Meshy · demo voice" : "Demo AI"}</span>;
+    : <span className="chip"><span className="dot bad" />{settings.ai.assistant !== "gemini-live" && settings.ai.generator !== "meshy" ? "AI keys missing" : settings.ai.assistant !== "gemini-live" ? "Gemini key missing" : "Meshy key missing"}</span>;
 
   return (
     <div className="shell">
@@ -250,8 +243,8 @@ export function App() {
         {page !== "assistant" && <MicButton voice={voice} />}
       </header>
       <nav className="rail">
-        {(Object.keys(LABELS) as Page[]).map((p) => (
-          <button key={p} className={page === p ? "active" : ""} onClick={() => setPage(p)}>
+        {(Object.keys(LABELS) as RailPage[]).map((p) => (
+          <button key={p} className={page === p || (p === "viewer" && page === "prepare") ? "active" : ""} onClick={() => setPage(p)}>
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">{ICONS[p]}</svg>
             {LABELS[p]}
           </button>
@@ -261,8 +254,9 @@ export function App() {
         <PageBoundary page={page}>
           {page === "assistant" && <AssistantPage voice={voice} settings={settings} onOpenProject={openProject} onError={showNotice} />}
           {page === "library" && <LibraryPage onOpen={openProject} />}
-          {page === "viewer" && <ViewerPage projectId={projectId} settings={settings} heightEvent={heightEvent} onBrowse={() => setPage("library")} onError={showNotice} />}
-          {page === "printer" && <PrinterPage status={printer} settings={settings} />}
+          {page === "viewer" && <ViewerPage projectId={projectId} settings={settings} heightEvent={heightEvent} onBrowse={() => setPage("library")} onPrepare={() => setPage("prepare")} onError={showNotice} />}
+          {page === "prepare" && <PreparePage projectId={projectId} onBack={() => setPage("viewer")} onError={showNotice} />}
+          {page === "printer" && <PrinterPage status={printer} settings={settings} onError={showNotice} />}
           {page === "settings" && <SettingsPage settings={settings} onError={showNotice} />}
         </PageBoundary>
         {notice && <div className={`toast ${notice.level}`} onClick={() => setNotice(null)}>{notice.message}</div>}
@@ -271,13 +265,15 @@ export function App() {
         <div className="modal-backdrop" data-no-drag-scroll>
           <div className="confirm-sheet">
             <div className="muted small" style={{ textTransform: "uppercase", letterSpacing: ".07em" }}>
-              {pending.kind === "refine" ? "Add colour & detail" : "Create a 3D model"}
+              {pending.kind === "print" ? "Start printing on the QD330" : pending.kind === "refine" ? "Add colour & detail" : "Create a 3D model"}
             </div>
             <div style={{ fontSize: 22, fontWeight: 700, margin: "6px 0" }}>{pending.title}</div>
             <div className="muted confirm-prompt">{pending.prompt}</div>
             <div className="row" style={{ margin: "12px 0", gap: 16 }}>
-              <span className="chip">{pending.credits > 0 ? `${pending.credits} Meshy credits` : "Free (demo)"}</span>
-              {settings && settings.ai.generator === "meshy" && (
+              {pending.kind === "print"
+                ? (pending.details ?? []).map((d) => <span key={d} className="chip">{d}</span>)
+                : <span className="chip">{pending.credits} Meshy credits</span>}
+              {pending.kind !== "print" && settings && settings.ai.generator === "meshy" && (
                 <span className="muted small">{settings.ai.usedToday} of {settings.ai.dailyLimit} jobs used today</span>
               )}
             </div>
@@ -292,7 +288,7 @@ export function App() {
                   )
                 }
               >
-                Confirm
+                {pending.kind === "print" ? "Start print" : "Confirm"}
               </button>
             </div>
             <div className="muted small" style={{ marginTop: 8 }}>You can also say “yes” to confirm.</div>

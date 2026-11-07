@@ -4,9 +4,9 @@
 |---|---|---|
 | 1 | Local foundation: Electron/React/TS kiosk app for 1024×600, push-to-talk mic, audio playback, live QD330 camera, Three.js viewer, model library, SQLite, local storage, demo Gemini/Meshy adapters, observation-only printer, settings, logs, crash recovery | **Built — awaiting on-device sign-off** |
 | 2 | Gemini Live voice + Meshy generation, revisions, sizing by voice, cost confirmation | **Built** — live Gemini proposal flow verified; awaiting keys on the Pi |
-| 3 | Print preparation: validation, repair, orientation, slicing via existing engine, QD330 file validation, protocol investigation | Not started |
-| 4 | AI Print Guardian: snapshots, OpenCV, multi-frame confirmation, Gemini verification, alerts, incident history | Not started |
-| 5 | Controlled printing: verified transfer, approved print start, pause/resume/cancel with confirmed acks, end-to-end demo, autostart | Not started |
+| 3 | Print preparation: validation, repair, orientation, slicing via existing engine, QD330 file validation, protocol investigation | **Built + wired** (Prepare screen). Verified on a real Meshy model; needs `prusa-slicer` on the Pi; `.gx` layout unverified |
+| 4 | AI Print Guardian: snapshots, OpenCV, multi-frame confirmation, Gemini verification, alerts, incident history | **Built + wired** (Printer page). Tuning on a real print still to do; auto-pause off |
+| 5 | Controlled printing: verified transfer, approved print start, pause/resume/cancel with confirmed acks, end-to-end demo, autostart | **Built + wired, locked** until the operator checklist (docs/PHASE5.md) sets `MORPHIX_PRINT_CONTROLS=1` |
 
 ## Phase 1 checklist (verify on the Pi with the touchscreen)
 - [ ] App opens fullscreen on the 1024×600 touchscreen; all buttons easy to hit

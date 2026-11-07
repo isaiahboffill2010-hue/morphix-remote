@@ -1,4 +1,4 @@
-// Morphix — Electron main process (Phase 1 foundation + Phase 2 Gemini/Meshy).
+// Morphix — Electron main process (Phases 1–5).
 import { app, BrowserWindow, ipcMain, session, type IpcMainInvokeEvent } from "electron";
 import { randomUUID } from "node:crypto";
 import { createReadStream, existsSync, readFileSync, statSync } from "node:fs";
@@ -9,16 +9,18 @@ import { arch, platform } from "node:os";
 import { IPC, type AppEvent, type AppSettings, type AssistantTurn, type PrinterStatus } from "@morphix/shared";
 import { Logger, Storage, safeId } from "@morphix/storage";
 import { MorphixDb } from "@morphix/database";
-import { PrinterObserver, TcpTransport } from "@morphix/printer";
-import { DemoGenerator, MeshyClient, MeshyGenerator, MESHY_PREVIEW_CREDITS, MESHY_REFINE_CREDITS, type ModelGenerator } from "@morphix/meshy";
-import { DemoAssistant, DEFAULT_LIVE_MODEL } from "@morphix/gemini";
+import { PrinterObserver } from "@morphix/printer";
+import { MeshyClient, MeshyGenerator, MESHY_PREVIEW_CREDITS, MESHY_REFINE_CREDITS, type ModelGenerator } from "@morphix/meshy";
+import { DEFAULT_LIVE_MODEL } from "@morphix/gemini";
 import { NetworkManager } from "@morphix/network";
 import { type Ctx, latestVersion, moveProject, now, toProject, toVersion } from "./context";
 import { Generation, type FinishedInfo } from "./generation";
 import { Actions, PolicyError } from "./actions";
 import { VoiceController } from "./voice";
+import { Printing } from "./printing";
 
 const APP_DIR = resolve(__dirname, "..");
+const REPO_ROOT = resolve(APP_DIR, "..", "..");
 const RENDERER_DIR = join(APP_DIR, "dist", "renderer");
 const WINDOWED = process.env.MORPHIX_WINDOWED === "1";
 const SMOKE = process.env.MORPHIX_SMOKE === "1";
@@ -43,10 +45,10 @@ const DAILY_LIMIT = Number(env("MORPHIX_MESHY_DAILY_LIMIT") || 15);
 let win: BrowserWindow | null = null;
 let origin = "";
 const meshy = has("MESHY_API_KEY") ? new MeshyClient(env("MESHY_API_KEY"), MESHY_MODEL) : null;
-const generator: ModelGenerator = meshy ? new MeshyGenerator(meshy) : new DemoGenerator();
-const demoAssistant = new DemoAssistant();
+const generator: ModelGenerator | null = meshy ? new MeshyGenerator(meshy) : null;
 const network = new NetworkManager();
-const printer = new PrinterObserver(new TcpTransport(PRINTER_HOST), onPrinterStatus);
+const PRINT_CONTROLS = env("MORPHIX_PRINT_CONTROLS") === "1";
+const GX_VERIFIED = env("MORPHIX_GX_VERIFIED") === "1";
 
 const ctx: Ctx = {
   db: null as unknown as MorphixDb, // set in whenReady
@@ -57,12 +59,30 @@ const ctx: Ctx = {
   url: (rel) => (rel ? `${origin}/library/${rel}` : null),
   currentProjectId: null,
 };
-const generation = new Generation(ctx, () => generator, onGenerationFinished);
+const printing = new Printing(ctx, {
+  repoRoot: REPO_ROOT,
+  printerHost: PRINTER_HOST,
+  controlsEnabled: PRINT_CONTROLS,
+  gxVerified: GX_VERIFIED,
+  pausedStatuses: (env("MORPHIX_PAUSED_STATUSES") || "PAUSED").split(",").map((x) => x.trim()).filter(Boolean),
+});
+// All printer traffic (polls + control) goes through the controller's queue so sessions never collide.
+const printer = new PrinterObserver(printing.controller.transport, onPrinterStatus);
+const generation = new Generation(
+  ctx,
+  () => {
+    if (!generator) throw new Error("Meshy is not configured. Add MESHY_API_KEY to ~/Morphix/config/morphix.env and restart Morphix.");
+    return generator;
+  },
+  onGenerationFinished,
+);
 const actions = new Actions(ctx, generation, { usingMeshy: () => meshy !== null, meshyModel: MESHY_MODEL, dailyLimit: DAILY_LIMIT });
+actions.printer = { proposal: (jobId) => printing.printProposal(jobId), start: (jobId, by) => printing.startApprovedPrint(jobId, by) };
 const voice = new VoiceController(ctx, actions, {
   apiKey: has("GEMINI_API_KEY") ? env("GEMINI_API_KEY") : undefined,
   model: GEMINI_MODEL,
   meshyBalance: async () => (meshy ? (await meshy.balance()).balance : null),
+  printing: () => printing,
 });
 
 process.on("uncaughtException", (e) => log.write("error", "uncaughtException", { message: e.message, stack: e.stack }));
@@ -84,9 +104,9 @@ function settings(): AppSettings {
   return {
     storageRoot: storage.root,
     ai: {
-      assistant: gemini ? "gemini-live" : "demo",
+      assistant: gemini ? "gemini-live" : "missing",
       geminiModel: GEMINI_MODEL,
-      generator: meshy ? "meshy" : "demo",
+      generator: meshy ? "meshy" : "missing",
       meshyModel: MESHY_MODEL,
       previewCredits: meshy ? (MESHY_PREVIEW_CREDITS[MESHY_MODEL] ?? 20) : 0,
       refineCredits: meshy ? MESHY_REFINE_CREDITS : 0,
@@ -97,7 +117,7 @@ function settings(): AppSettings {
     cameraStreamUrl: `${CAMERA_BASE}/?action=stream`,
     cameraSnapshotUrl: `${CAMERA_BASE}/?action=snapshot`,
     printerPollSeconds: POLL_SECONDS,
-    demoMode: !gemini || !meshy,
+    demoMode: false,
     keys: {
       gemini: has("GEMINI_API_KEY"),
       meshy: has("MESHY_API_KEY"),
@@ -116,6 +136,11 @@ function send(channel: string, payload: unknown): void {
 
 function onPrinterStatus(s: PrinterStatus, prev: PrinterStatus): void {
   send(IPC.printerStatusEvent, s);
+  try {
+    printing.onPrinterStatus(s);
+  } catch (e) {
+    log.write("warn", "print tracking error", { error: (e as Error).message });
+  }
   if (!ctx.db) return;
   if (s.online !== prev.online || s.machine !== prev.machine) {
     const kind = s.online ? `status:${s.machine ?? "unknown"}` : "offline";
@@ -215,9 +240,8 @@ function registerIpc(): void {
     const text = String(prompt ?? "").trim().slice(0, 500);
     if (!text) throw new Error("describe what to make first");
     try {
-      if (meshy) return { pending: actions.proposeGenerate(text, text.slice(0, 60)) };
-      const { projectId, taskId } = generation.start({ prompt: text, title: text.slice(0, 60), kind: "preview" });
-      return { project: toProject(ctx, db.get("SELECT * FROM projects WHERE id = ?", [projectId])!), taskId };
+      if (!meshy) throw new Error("Meshy is not configured. Add MESHY_API_KEY to ~/Morphix/config/morphix.env and restart Morphix.");
+      return { pending: actions.proposeGenerate(text, text.slice(0, 60)) };
     } catch (e) {
       throw new Error(friendly(e));
     }
@@ -247,19 +271,12 @@ function registerIpc(): void {
     db.run("UPDATE model_versions SET thumbnail_rel_path = ? WHERE id = ?", [storage.relative(file), versionId]);
   });
 
-  // Demo assistant (no Gemini key)
-  handle(IPC.submitRecording, async (pcm: ArrayBuffer, sampleRate: number) => {
-    const buf = Buffer.from(pcm);
-    const rate = Math.round(Number(sampleRate)) || 16000;
-    const rel = saveRecording(buf, rate);
-    const { transcript, reply } = await demoAssistant.hearAudio(buf, rate);
-    return { turn: addTurn("user", transcript, rel), reply: addTurn("assistant", reply.text), proposedPrompt: reply.proposedPrompt };
-  });
-  handle(IPC.sendText, async (text: string) => {
-    const t = String(text ?? "").slice(0, 500);
-    const reply = await demoAssistant.hearText(t);
-    return { turn: addTurn("user", t), reply: addTurn("assistant", reply.text), proposedPrompt: reply.proposedPrompt };
-  });
+  // Without a Gemini key there is no assistant (demo mode removed).
+  const noGemini = () => {
+    throw new Error("Gemini is not configured. Add GEMINI_API_KEY to ~/Morphix/config/morphix.env and restart Morphix.");
+  };
+  handle(IPC.submitRecording, noGemini);
+  handle(IPC.sendText, noGemini);
   handle(IPC.conversation, () =>
     db
       .all("SELECT * FROM conversation ORDER BY created_at DESC LIMIT 50")
@@ -296,6 +313,17 @@ function registerIpc(): void {
   handle(IPC.confirmAction, (id: string) => {
     try {
       const r = actions.confirm(String(id), "touch");
+      if (r.printing) {
+        ctx.event({ type: "navigate", page: "printer" });
+        r.printing.then(
+          () => {
+            ctx.event({ type: "notice", level: "info", message: "The printer confirmed the print has started." });
+            void voice.notify("The user tapped Confirm and the printer confirmed the print has started.");
+          },
+          (e) => ctx.event({ type: "notice", level: "error", message: `Print not started: ${(e as Error).message}` }),
+        );
+        return;
+      }
       void voice.notify(`The user tapped Confirm. Generating "${r.action.title}" has started (${r.action.credits} credits). It takes about one to three minutes.`);
     } catch (e) {
       throw new Error(friendly(e));
@@ -325,6 +353,26 @@ function registerIpc(): void {
   handle(IPC.testGemini, () => voice.test());
 
   handle(IPC.printerStatus, () => printer.status);
+
+  // Phase 3–5: print preparation, printing, guardian
+  handle(IPC.preparePrint, (versionId: string, settings: Record<string, unknown>) => printing.prepare(safeId(String(versionId)), settings ?? {}));
+  handle(IPC.latestPrintJob, (projectId: string) => printing.latest(safeId(String(projectId))));
+  handle(IPC.requestPrint, (jobId: string) => {
+    try {
+      actions.proposePrint(safeId(String(jobId)));
+    } catch (e) {
+      throw new Error(friendly(e));
+    }
+  });
+  handle(IPC.printStatus, () => printing.status());
+  handle(IPC.pausePrint, () => printing.pause());
+  handle(IPC.cancelPrint, () => printing.cancel());
+  handle(IPC.guardian, () => printing.view());
+  handle(IPC.guardianCommand, (cmd: string) => {
+    const allowed = ["start", "stop", "requestPause", "resolve", "dismiss", "resetBaseline"] as const;
+    if (!(allowed as readonly string[]).includes(cmd)) throw new Error("unknown guardian command");
+    return printing.guardianCommand(cmd as (typeof allowed)[number]);
+  });
   handle(IPC.printerInfo, () => printer.info());
 
   // Network (Wi-Fi only; the printer's Ethernet link is read-only)
@@ -433,24 +481,13 @@ function createWindow(): void {
     win.webContents.once("did-finish-load", async () => {
       await new Promise((r) => setTimeout(r, 2500));
       const text = await win!.webContents.executeJavaScript("document.body.innerText");
-      // End-to-end through the real bridge: prompt -> demo model -> stored -> served.
       const flow = await win!.webContents.executeJavaScript(`(async () => {
         const m = window.morphix;
-        const r = await m.sendText("a small vase");
-        const done = new Promise((res) => { const off = m.onGenerationProgress((p) => {
-          if (p.status === "succeeded" || p.status === "failed") { off(); res(p); } }); });
-        const created = await m.createProjectFromPrompt(r.proposedPrompt);
-        if (created.pending) { await m.cancelAction(created.pending.id); return { pendingCredits: created.pending.credits, cancelled: true }; }
-        const { project } = created;
-        const p = await done;
-        const d = await m.getProject(project.id);
-        const v = d.versions[0];
-        const bytes = (await (await fetch(v.url)).arrayBuffer()).byteLength;
-        const sized = await m.setTargetHeight(v.id, 152.4);
-        let blocked = false;
-        const probe = v.url.split("/library/")[0] + "/library/..%2F..%2F..%2F..%2Fetc%2Fpasswd";
-        try { blocked = (await fetch(probe)).status === 404; } catch { blocked = true; }
-        return { status: p.status, state: d.project.state, bytes, fileBytes: v.bytes, height: sized.targetHeightMm, blocked, projects: (await m.listProjects()).length };
+        const settings = await m.getSettings();
+        const guardian = await m.guardian();
+        const print = await m.printStatus();
+        const net = await m.networkStatus().catch((e) => ({ error: String(e) }));
+        return { ai: settings.ai, guardian: { state: guardian.state, running: guardian.running }, print: { enabled: print.enabled }, net: Boolean(net) };
       })()`);
       let live: unknown = "skipped";
       if (process.env.MORPHIX_SMOKE_LIVE === "1") {
@@ -489,12 +526,14 @@ app.on("second-instance", () => {
 app.whenReady().then(async () => {
   const wasmDir = dirname(require.resolve("sql.js/dist/sql-wasm.wasm"));
   ctx.db = await MorphixDb.open(storage, wasmDir);
+  printing.init();
   const resumable = ctx.db.recoverInterruptedTasks();
   ctx.db.backup();
   setInterval(() => ctx.db.backup(), 24 * 3600 * 1000);
   log.write("info", "Morphix starting", {
     storage: storage.root, printer: PRINTER_HOST, assistant: voice.enabled ? GEMINI_MODEL : "demo",
-    generator: meshy ? MESHY_MODEL : "demo", resumable: resumable.length,
+    generator: meshy ? MESHY_MODEL : "missing", resumable: resumable.length,
+    printControls: PRINT_CONTROLS, gxVerified: GX_VERIFIED,
   });
 
   const server = await startServer();
@@ -526,6 +565,7 @@ app.on("window-all-closed", () => app.quit());
 app.on("before-quit", () => {
   printer.stop();
   voice.close();
+  void printing.shutdown();
   try {
     ctx.db?.close();
   } catch (e) {

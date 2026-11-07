@@ -40,6 +40,15 @@ const api: MorphixApi = {
   meshyBalance: () => ipcRenderer.invoke(IPC.meshyBalance),
   testGemini: () => ipcRenderer.invoke(IPC.testGemini),
 
+  preparePrint: (versionId, settings) => ipcRenderer.invoke(IPC.preparePrint, versionId, settings),
+  latestPrintJob: (projectId) => ipcRenderer.invoke(IPC.latestPrintJob, projectId),
+  requestPrint: (jobId) => ipcRenderer.invoke(IPC.requestPrint, jobId),
+  printStatus: () => ipcRenderer.invoke(IPC.printStatus),
+  pausePrint: () => ipcRenderer.invoke(IPC.pausePrint),
+  cancelPrint: () => ipcRenderer.invoke(IPC.cancelPrint),
+  guardian: () => ipcRenderer.invoke(IPC.guardian),
+  guardianCommand: (cmd) => ipcRenderer.invoke(IPC.guardianCommand, cmd),
+
   networkStatus: () => ipcRenderer.invoke(IPC.networkStatus),
   wifiScan: () => ipcRenderer.invoke(IPC.wifiScan),
   wifiConnect: (ssid, password) => ipcRenderer.invoke(IPC.wifiConnect, ssid, password),

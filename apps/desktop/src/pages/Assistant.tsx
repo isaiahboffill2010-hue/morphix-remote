@@ -4,8 +4,7 @@ import { api } from "../bridge";
 import { MicButton, voiceLabel, type Voice } from "../App";
 import { TextEntry } from "../components/Keyboard";
 
-const DEMO_IDEAS = ["A small vase", "A gear", "A star trophy", "A ring"];
-const LIVE_IDEAS = ["A cute dragon figurine", "A phone stand", "A tiny astronaut", "A desk organizer"];
+const IDEAS = ["A cute dragon figurine", "A phone stand", "A tiny astronaut", "A desk organizer"];
 
 interface Props {
   voice: Voice;
@@ -24,20 +23,7 @@ export function AssistantPage({ voice, settings, onOpenProject, onError }: Props
     listRef.current?.scrollTo({ top: listRef.current.scrollHeight });
   }, [voice.turns, voice.userDraft, voice.assistantDraft, voice.proposal, gen]);
 
-  const createDemo = async () => {
-    if (!voice.proposal) return;
-    const prompt = voice.proposal;
-    voice.setProposal(null);
-    try {
-      const r = await api.createProjectFromPrompt(prompt);
-      if ("taskId" in r) setGen({ taskId: r.taskId, projectId: r.project.id, status: "queued", progress: 0, stage: "Starting…" });
-    } catch (e) {
-      onError((e as Error).message);
-    }
-  };
-
   const generating = gen && (gen.status === "queued" || gen.status === "running");
-  const ideas = voice.live ? LIVE_IDEAS : DEMO_IDEAS;
   const meshy = settings?.ai.generator === "meshy";
 
   return (
@@ -46,7 +32,7 @@ export function AssistantPage({ voice, settings, onOpenProject, onError }: Props
         <MicButton voice={voice} big />
         <div style={{ fontWeight: 650, fontSize: 18 }}>{voiceLabel(voice.state)}</div>
         <div className="muted small">
-          {voice.live ? `Gemini Live · ${settings?.ai.geminiModel}` : "Demo voice · add a Gemini key for real conversations"}
+          {voice.live ? `Gemini Live · ${settings?.ai.geminiModel}` : "Gemini not set up — add GEMINI_API_KEY on the Pi"}
         </div>
         {meshy && <div className="muted small">Meshy {settings?.ai.meshyModel} · {settings?.ai.previewCredits} credits per model</div>}
       </section>
@@ -71,15 +57,6 @@ export function AssistantPage({ voice, settings, onOpenProject, onError }: Props
           ))}
           {voice.userDraft && <div className="bubble user draft">{voice.userDraft}</div>}
           {voice.assistantDraft && <div className="bubble assistant draft">{voice.assistantDraft}</div>}
-          {voice.proposal && !voice.live && (
-            <div className="bubble assistant">
-              Make a model of <b>“{voice.proposal}”</b>?
-              <div className="row" style={{ marginTop: 8 }}>
-                <button className="btn primary" onClick={() => void createDemo()}>Create model</button>
-                <button className="btn" onClick={() => voice.setProposal(null)}>Not now</button>
-              </div>
-            </div>
-          )}
           {gen && (
             <div className="bubble assistant gen-card">
               <div className="row" style={{ gap: 12, alignItems: "flex-start" }}>
@@ -101,8 +78,8 @@ export function AssistantPage({ voice, settings, onOpenProject, onError }: Props
         </div>
         <div className="chips">
           <button className="btn" onClick={() => setTyping(true)}>⌨ Type an idea</button>
-          {ideas.map((idea) => (
-            <button key={idea} className="btn" disabled={Boolean(generating) || voice.state === "thinking"} onClick={() => void voice.sendText(voice.live ? `Make me ${idea.toLowerCase()}.` : idea)}>
+          {IDEAS.map((idea) => (
+            <button key={idea} className="btn" disabled={Boolean(generating) || voice.state === "thinking"} onClick={() => void voice.sendText(`Make me ${idea.toLowerCase()}.`)}>
               {idea}
             </button>
           ))}

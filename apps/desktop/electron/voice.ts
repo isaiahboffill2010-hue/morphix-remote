@@ -9,6 +9,8 @@ import { MM_PER_INCH } from "@morphix/domain";
 import { scaledCheck, stlSize } from "@morphix/slicing";
 import { type Ctx, latestVersion, moveProject, now } from "./context";
 import { type Actions, PolicyError } from "./actions";
+import type { Printing } from "./printing";
+import { formatDuration } from "./printing";
 
 interface Turn {
   user: string;
@@ -26,7 +28,7 @@ export class VoiceController {
   constructor(
     private ctx: Ctx,
     private actions: Actions,
-    private opts: { apiKey: string | undefined; model: string; meshyBalance: () => Promise<number | null> },
+    private opts: { apiKey: string | undefined; model: string; meshyBalance: () => Promise<number | null>; printing: () => Printing | null },
   ) {
     if (opts.apiKey) {
       this.live = new GeminiLive(opts.apiKey, opts.model, MORPHIX_SYSTEM_INSTRUCTION, MORPHIX_TOOLS, {
@@ -189,6 +191,13 @@ export class VoiceController {
           return { ok: false, error: "The user has not clearly said yes. Ask them to say yes or tap Confirm on the screen." };
         }
         const r = this.actions.confirm(pending.id, "voice");
+        if (r.printing) {
+          r.printing.then(
+            () => void this.notify("The printer confirmed the print has started. Tell the user briefly; the camera guardian is watching it."),
+            (e) => void this.notify(`Starting the print failed: ${(e as Error).message}. Tell the user plainly.`),
+          );
+          return { ok: true, status: "sending_to_printer", note: "Not printing yet: wait for the [Morphix event] that the printer confirmed." };
+        }
         return { ok: true, status: "started", kind: pending.kind, credits: pending.credits, projectId: r.projectId, note: "Generation takes about one to three minutes." };
       }
       case "cancel_pending_action": {
@@ -227,14 +236,52 @@ export class VoiceController {
           fitsPrinter: size?.fits ?? null,
           pendingAction: this.actions.current ? { kind: this.actions.current.kind, credits: this.actions.current.credits } : null,
           meshyCredits: await this.credits(),
-          printingAvailable: false,
+          print: (() => {
+            const printing = this.opts.printing();
+            if (!printing) return null;
+            const st = printing.status();
+            const job = pid ? printing.latest(pid) : null;
+            return { controlsEnabled: st.enabled, gxVerified: st.gxVerified, activeJob: st.job, prepared: job ? { ok: job.ok, fits: job.fits, estimates: job.estimates } : null };
+          })(),
         };
       }
-      case "request_print":
+      case "prepare_print": {
+        const printing = this.opts.printing();
+        const v = latestVersion(this.ctx, this.ctx.currentProjectId);
+        if (!printing || !v) throw new PolicyError("there is no current model to prepare");
+        const layer = a.quality === "draft" ? 0.28 : a.quality === "fine" ? 0.12 : 0.2;
+        const infill = Math.min(60, Math.max(5, Number(a.infill_percent ?? 15)));
+        const supports = ["none", "auto", "buildplate"].includes(String(a.supports)) ? (String(a.supports) as "none" | "auto" | "buildplate") : "auto";
+        this.ctx.event({ type: "navigate", page: "prepare", projectId: String(v.project_id) });
+        const r = await printing.prepare(String(v.id), { layerHeightMm: layer, infillPercent: infill, supports });
         return {
-          ok: false, available: false,
-          message: "Printing isn't switched on yet. The model is saved on the Pi; print preparation and printer control come in the next phases.",
+          ok: r.ok, jobId: r.jobId, fits: r.fits, sizeMm: r.size ? [Math.round(r.size.x), Math.round(r.size.y), Math.round(r.size.z)] : null,
+          printTime: r.estimates?.printTimeS ? formatDuration(r.estimates.printTimeS) : null,
+          filamentGrams: r.estimates?.filamentG ? Math.round(r.estimates.filamentG) : null,
+          estimateSource: r.estimates?.source, slicer: r.slicer.ok ? "ok" : r.slicer.message, warnings: r.warnings.slice(0, 3), error: r.error,
         };
+      }
+      case "request_print": {
+        const printing = this.opts.printing();
+        const pid = this.ctx.currentProjectId;
+        const job = printing && pid ? printing.latest(pid) : null;
+        if (!job) return { ok: false, message: "Prepare the model first (prepare_print)." };
+        const p = this.actions.proposePrint(job.jobId);
+        return { ok: true, status: "awaiting_user_confirmation", file: p.fileName, details: p.details, note: "Ask the user to tap Confirm or say yes." };
+      }
+      case "pause_print": {
+        const printing = this.opts.printing();
+        if (!printing) throw new PolicyError("printing is not available");
+        return await printing.pause();
+      }
+      case "cancel_print": {
+        const printing = this.opts.printing();
+        if (!printing) throw new PolicyError("printing is not available");
+        if (this.turn?.system || !/\b(cancel|stop|abort)\b/i.test(this.turn?.user ?? "")) {
+          return { ok: false, message: "Only cancel when the user clearly asks to cancel or stop the print." };
+        }
+        return await printing.cancel();
+      }
       default:
         return { ok: false, error: `unknown tool ${c.name}` };
     }

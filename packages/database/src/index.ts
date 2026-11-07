@@ -52,6 +52,8 @@ function migrate(db: Database): void {
   add("model_versions", "remote_task_id", "TEXT");
   add("generation_tasks", "parent_version_id", "TEXT");
   add("generation_tasks", "credits", "INTEGER");
+  add("print_jobs", "settings_json", "TEXT");
+  add("print_jobs", "summary_json", "TEXT");
 }
 
 export class MorphixDb {
@@ -128,6 +130,13 @@ export class MorphixDb {
         /* ignore */
       }
     }
+  }
+
+  /** Raw multi-statement exec (schema setup for other packages). */
+  exec(sql: string): { columns: string[]; values: unknown[][] }[] {
+    const r = this.db.exec(sql);
+    this.markDirty();
+    return r;
   }
 
   get isDirty(): boolean {

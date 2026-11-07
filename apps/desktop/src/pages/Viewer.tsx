@@ -13,10 +13,11 @@ interface Props {
   settings: AppSettings | null;
   heightEvent: { versionId: string; heightMm: number; n: number } | null;
   onBrowse: () => void;
+  onPrepare: () => void;
   onError: (message: string) => void;
 }
 
-export function ViewerPage({ projectId, settings, heightEvent, onBrowse, onError }: Props) {
+export function ViewerPage({ projectId, settings, heightEvent, onBrowse, onPrepare, onError }: Props) {
   const [data, setData] = useState<{ project: Project; versions: ModelVersion[] } | null>(null);
   const [versionId, setVersionId] = useState<string | null>(null);
   const [height, setHeight] = useState<number | null>(null);
@@ -139,6 +140,7 @@ export function ViewerPage({ projectId, settings, heightEvent, onBrowse, onError
           </div>
           <div className="muted small" style={{ marginTop: 6 }}>Or say “make it six inches tall”.</div>
         </div>
+        <button className="btn primary" style={{ width: "100%", flex: "none" }} disabled={!fits} onClick={onPrepare}>Prepare to print ›</button>
       </aside>
     </div>
   );
