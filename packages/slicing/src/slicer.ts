@@ -109,6 +109,10 @@ export interface SliceOptions {
   supports?: SupportMode;
   layerHeightMm?: number;
   infillPercent?: number;
+  /** Brim width in mm (0 = no brim). Omitted: the profile's value (no brim). */
+  brimWidthMm?: number;
+  /** Perimeters / wall loops. Omitted: the profile's value (2). */
+  perimeters?: number;
   /** Plate centre for PrusaSlicer --center (default 110,110). */
   centerMm?: { x: number; y: number };
   profilesDir?: string;
@@ -136,12 +140,14 @@ export type SliceResult =
   | { ok: false; reason: SliceFailureReason; message: string; slicer?: SlicerInfo; args?: string[]; log?: string };
 
 /** Builds the PrusaSlicer CLI argument list (exported for tests / debugging). */
-export function prusaArgs(o: { stlPath: string; outPath: string; ini: string; supports: SupportMode; layerHeightMm?: number; infillPercent?: number; center: { x: number; y: number } }): string[] {
+export function prusaArgs(o: { stlPath: string; outPath: string; ini: string; supports: SupportMode; layerHeightMm?: number; infillPercent?: number; brimWidthMm?: number; perimeters?: number; center: { x: number; y: number } }): string[] {
   const args = ["--export-gcode", "--load", o.ini, "--output", o.outPath, "--center", `${o.center.x},${o.center.y}`];
   if (o.supports === "auto") args.push("--support-material", "--support-material-auto");
   if (o.supports === "buildplate") args.push("--support-material", "--support-material-auto", "--support-material-buildplate-only");
   if (o.layerHeightMm) args.push("--layer-height", String(o.layerHeightMm), "--first-layer-height", String(o.layerHeightMm));
   if (o.infillPercent !== undefined) args.push("--fill-density", `${o.infillPercent}%`);
+  if (o.brimWidthMm !== undefined) args.push("--brim-width", String(o.brimWidthMm));
+  if (o.perimeters !== undefined) args.push("--perimeters", String(o.perimeters));
   args.push(o.stlPath);
   return args;
 }
@@ -175,10 +181,12 @@ export async function sliceStl(opts: SliceOptions): Promise<SliceResult> {
       supports,
       layerHeightMm: opts.layerHeightMm,
       infillPercent: opts.infillPercent,
+      brimWidthMm: opts.brimWidthMm,
+      perimeters: opts.perimeters,
       center: opts.centerMm ?? { x: QD330_PLA_DEFAULTS.buildVolumeMm.x / 2, y: QD330_PLA_DEFAULTS.buildVolumeMm.y / 2 },
     });
   } else {
-    const processJson = await orcaProcessFile(profiles, outDir, supports, opts.layerHeightMm, opts.infillPercent);
+    const processJson = await orcaProcessFile(profiles, outDir, supports, opts.layerHeightMm, opts.infillPercent, opts);
     expected = null; // Orca names its output plate_1.gcode (version dependent)
     args = [
       "--slice", "0",
@@ -208,7 +216,14 @@ export async function sliceStl(opts: SliceOptions): Promise<SliceResult> {
   };
 }
 
-async function orcaProcessFile(p: SlicerProfilePaths, outDir: string, supports: SupportMode, layer?: number, infill?: number): Promise<string> {
+async function orcaProcessFile(
+  p: SlicerProfilePaths,
+  outDir: string,
+  supports: SupportMode,
+  layer?: number,
+  infill?: number,
+  extra: { brimWidthMm?: number; perimeters?: number } = {},
+): Promise<string> {
   const json = JSON.parse(await readFile(p.orcaProcess, "utf8"));
   json.enable_support = supports === "none" ? "0" : "1";
   json.support_type = "normal(auto)";
@@ -218,6 +233,11 @@ async function orcaProcessFile(p: SlicerProfilePaths, outDir: string, supports: 
     json.initial_layer_print_height = String(layer);
   }
   if (infill !== undefined) json.sparse_infill_density = `${infill}%`;
+  if (extra.brimWidthMm !== undefined) {
+    json.brim_type = extra.brimWidthMm > 0 ? "outer_only" : "no_brim";
+    json.brim_width = String(extra.brimWidthMm);
+  }
+  if (extra.perimeters !== undefined) json.wall_loops = String(extra.perimeters);
   const path = join(outDir, "morphix-process.json");
   await writeFile(path, JSON.stringify(json, null, 2));
   return path;

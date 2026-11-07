@@ -31,6 +31,10 @@ export interface PreparePrintOptions {
   supports?: SupportMode;
   layerHeightMm?: number;
   infillPercent?: number;
+  /** Brim width in mm (0 = none). Omitted: the slicer profile's value. */
+  brimWidthMm?: number;
+  /** Perimeters (walls). Omitted: the slicer profile's value. */
+  perimeters?: number;
   buildVolume?: BuildVolume;
   /** For GLB: glTF unit -> mm factor before height scaling (default 1000). */
   glbUnitScaleMm?: number;
@@ -242,6 +246,8 @@ export async function preparePrint(input: PreparePrintInput): Promise<PreparePri
     supports: o.supports,
     layerHeightMm: o.layerHeightMm,
     infillPercent: o.infillPercent,
+    brimWidthMm: o.brimWidthMm,
+    perimeters: o.perimeters,
     centerMm: { x: volume.x / 2, y: volume.y / 2 },
     profilesDir: o.profilesDir,
     timeoutMs: o.sliceTimeoutMs,
@@ -261,7 +267,7 @@ export async function preparePrint(input: PreparePrintInput): Promise<PreparePri
   result.estimates = { printTimeS: est.printTimeS, filamentMm: est.filamentMm, filamentG: est.filamentG, layerCount: est.layerCount, source: "slicer" };
 
   progress("gx");
-  const gx = gxFromGcode(sliced.gcode, thumbnailBmp, est, o.layerHeightMm);
+  const gx = gxFromGcode(sliced.gcode, thumbnailBmp, est, o.layerHeightMm, o.perimeters);
   const validation = validateGx(gx);
   files.gx = join(dir, `${base}.gx`);
   await writeFile(files.gx, gx);
@@ -274,14 +280,14 @@ export async function preparePrint(input: PreparePrintInput): Promise<PreparePri
 }
 
 /** Wraps slicer G-code in a .gx using values read from the G-code (or the QD330 defaults). */
-export function gxFromGcode(gcode: string, thumbnailBmp: Uint8Array, est: GcodeEstimates = analyzeGcode(gcode), layerHeightMm?: number): Buffer {
+export function gxFromGcode(gcode: string, thumbnailBmp: Uint8Array, est: GcodeEstimates = analyzeGcode(gcode), layerHeightMm?: number, shells?: number): Buffer {
   return writeGx({
     gcode,
     thumbnailBmp,
     printTimeS: est.printTimeS ?? 0,
     filamentMm: est.filamentMm ?? 0,
     layerHeightMm: layerHeightMm ?? est.layerHeightMm ?? QD330_PLA_DEFAULTS.layerHeightMm,
-    shells: QD330_PLA_DEFAULTS.perimeters,
+    shells: shells ?? QD330_PLA_DEFAULTS.perimeters,
     printSpeedMmS: QD330_PLA_DEFAULTS.printSpeedMmS,
     bedTempC: est.bedTempC ?? QD330_PLA_DEFAULTS.bedTempC,
     extruderTempC: est.nozzleTempC ?? QD330_PLA_DEFAULTS.nozzleTempC,
