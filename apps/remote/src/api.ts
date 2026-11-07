@@ -1,6 +1,8 @@
-// Production uses Vercel's same-origin /api proxy. The override is useful for
-// local development against a Pi directly.
-export const API = (import.meta.env.VITE_MORPHIX_REMOTE_URL as string | undefined)?.replace(/\/$/, "") ?? "";
+// Production always uses Vercel's same-origin /api proxy. A direct Pi URL is
+// accepted only by the local Vite development server, never in a Vercel build.
+export const API = import.meta.env.DEV
+  ? (import.meta.env.VITE_MORPHIX_REMOTE_URL as string | undefined)?.replace(/\/$/, "") ?? ""
+  : "";
 const key = "morphix.remote.token";
 export const token = () => localStorage.getItem(key) ?? "";
 export const saveToken = (v: string) => localStorage.setItem(key, v);
