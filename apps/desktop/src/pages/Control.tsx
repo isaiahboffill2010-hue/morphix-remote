@@ -37,8 +37,9 @@ export function ControlPage({ status, onOpenPrinter, onError }: { status: Printe
   }, [status]);
 
   const phase = control?.job?.phase;
-  const printing = phase === "printing" || status?.machine === "BUILDING_FROM_SD";
-  const paused = phase === "paused";
+  const pausedNow = phase === "paused" || String(status?.moveMode ?? "").toUpperCase() === "PAUSED";
+  const printing = !pausedNow && (phase === "printing" || status?.machine === "BUILDING_FROM_SD");
+  const paused = pausedNow;
   const locked = !control?.enabled;
 
   // While printing only the light and the emergency stop stay usable.

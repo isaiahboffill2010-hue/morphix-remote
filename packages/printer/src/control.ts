@@ -38,6 +38,8 @@ import {
   NOZZLE_MAX_C,
   nozzleCommand,
   parseLed,
+  isBuilding,
+  isPausedStatus,
   stateProblem,
   targetIs,
   type CommandCapability,
@@ -177,6 +179,8 @@ export interface QD330ControllerOptions {
   startConfirmTimeoutMs?: number;
   /** How long to wait for the expected status after M25/M24/M26. */
   confirmTimeoutMs?: number;
+  /** How long to wait for the printer to report paused after M25 (it finishes queued moves first). Default 30 000. */
+  pauseConfirmTimeoutMs?: number;
   pollIntervalMs?: number;
   /** Pause between upload chunks. Default 0. */
   packetDelayMs?: number;
@@ -432,6 +436,7 @@ export class QD330Controller {
       uploadFinishTimeoutMs: options.uploadFinishTimeoutMs ?? 15_000,
       startConfirmTimeoutMs: options.startConfirmTimeoutMs ?? 20_000,
       confirmTimeoutMs: options.confirmTimeoutMs ?? 10_000,
+      pauseConfirmTimeoutMs: options.pauseConfirmTimeoutMs ?? Math.max(options.confirmTimeoutMs ?? 10_000, 30_000),
       pollIntervalMs: options.pollIntervalMs ?? 1000,
       packetDelayMs: options.packetDelayMs ?? 0,
       uploadFlushDelayMs: options.uploadFlushDelayMs ?? 3000,
@@ -609,12 +614,13 @@ export class QD330Controller {
       const before = await this.statusIn(s);
       r.status = before;
       meta.fileName = before.currentFile;
+      if (isPausedStatus(before, this.o.pausedStatuses)) throw new Error("the print is already paused");
       if (before.machine !== STATUS_BUILDING) throw new Error(`printer is ${describe(before)}; nothing to pause`);
       r.sent = true;
       r.reply = await s.command("M25");
       r.acknowledged = isAcknowledged(r.reply, "M25");
       if (!r.acknowledged) throw new Error(`printer did not accept M25: ${cleanReply(r.reply)}`);
-      await this.confirm(s, r, (st) => this.o.pausedStatuses.includes(st.machine ?? ""), this.o.confirmTimeoutMs, `one of ${this.o.pausedStatuses.join("/")}`);
+      await this.confirm(s, r, (st) => isPausedStatus(st, this.o.pausedStatuses), this.o.pauseConfirmTimeoutMs, `one of ${this.o.pausedStatuses.join("/")} or MoveMode PAUSED`);
     });
   }
 
@@ -630,7 +636,7 @@ export class QD330Controller {
     return this.run("resume", meta, false, async (s, r) => {
       const before = await this.statusIn(s);
       r.status = before;
-      if (!this.o.pausedStatuses.includes(before.machine ?? "")) throw new Error(`printer is ${describe(before)}; nothing to resume`);
+      if (!isPausedStatus(before, this.o.pausedStatuses)) throw new Error(`printer is ${describe(before)}; nothing to resume`);
       if (before.currentFile && !fileMatches(before.currentFile, fileName)) {
         throw new Error(`paused file is ${before.currentFile}, not ${fileName}`);
       }
@@ -639,7 +645,7 @@ export class QD330Controller {
       r.reply = await s.command("M24");
       r.acknowledged = isAcknowledged(r.reply, "M24");
       if (!r.acknowledged) throw new Error(`printer did not accept M24: ${cleanReply(r.reply)}`);
-      await this.confirm(s, r, (st) => st.machine === STATUS_BUILDING, this.o.confirmTimeoutMs, STATUS_BUILDING);
+      await this.confirm(s, r, (st) => isBuilding(st, this.o.pausedStatuses), this.o.confirmTimeoutMs, `${STATUS_BUILDING} and not paused`);
     });
   }
 

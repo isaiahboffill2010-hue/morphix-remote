@@ -10,7 +10,7 @@ import { transition, type WorkflowState } from "@morphix/domain";
 import { advisorGeminiFromEnv, prepareWithAdvice, type PreparePrintResult } from "@morphix/slicing";
 import { preparePrint } from "@morphix/slicing";
 import { toMorphixError } from "@morphix/errors";
-import { JobTracker, PrintAuthorizer, QD330Controller, detectActivePrint, type ApprovalSource, type MachineApprovalSource, type RequestedBy, type UnverifiedCommandFlags } from "@morphix/printer";
+import { JobTracker, PrintAuthorizer, QD330Controller, detectActivePrint, isPausedStatus, type ApprovalSource, type MachineApprovalSource, type RequestedBy, type UnverifiedCommandFlags } from "@morphix/printer";
 import { PrintGuardian, applyGuardianSchema, geminiVisionFromEnv, type GuardianSnapshot, type GuardianStore } from "@morphix/guardian";
 import { type Ctx, now } from "./context";
 import type { Jobs } from "./jobs";
@@ -96,6 +96,7 @@ export class Printing {
       visionDir: join(o.repoRoot, "services", "vision"),
       worker: { pythonPath: python, snapshotUrl: `http://${o.printerHost}:8080/?action=snapshot`, intervalSeconds: 10 },
       alerts: {
+        isPaused: (s) => s.online !== false && isPausedStatus(s, o.pausedStatuses),
         autoPause: false,
         pauseHook: o.controlsEnabled
           ? async (alert) => {

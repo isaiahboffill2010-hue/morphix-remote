@@ -109,6 +109,7 @@ export type PauseHook = (alert: Readonly<Alert>) => Promise<PauseHookResult>;
 export interface PrinterStatusLike {
   online?: boolean;
   machine?: string;
+  moveMode?: string;
 }
 
 export interface AlertMachineOptions {
@@ -127,7 +128,7 @@ export interface AlertMachineOptions {
 }
 
 export const defaultIsPaused = (s: PrinterStatusLike): boolean =>
-  s.online !== false && ["PAUSED", "PAUSE"].includes(String(s.machine ?? "").toUpperCase());
+  s.online !== false && (["PAUSED", "PAUSE"].includes(String(s.machine ?? "").toUpperCase()) || String(s.moveMode ?? "").toUpperCase() === "PAUSED");
 
 let counter = 0;
 const defaultId = () => `alert-${Date.now().toString(36)}-${(counter++).toString(36)}`;

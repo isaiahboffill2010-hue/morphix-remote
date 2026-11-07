@@ -197,9 +197,22 @@ export interface CapabilityContext {
   wait: (c: ControllerCommand) => number | "busy";
 }
 
+/**
+ * Paused: MachineStatus is one of `pausedStatuses`, or MoveMode reports PAUSED. FlashForge
+ * firmware (and the QD330) can keep MachineStatus at BUILDING_FROM_SD while paused and only
+ * flip MoveMode — the open FlashForge clients treat either as paused.
+ */
+export function isPausedStatus(st: { machine?: string; moveMode?: string } | undefined, pausedStatuses: string[]): boolean {
+  return pausedStatuses.includes(st?.machine ?? "") || String(st?.moveMode ?? "").toUpperCase() === "PAUSED";
+}
+
+/** Printing and not paused. */
+export function isBuilding(st: { machine?: string; moveMode?: string } | undefined, pausedStatuses: string[]): boolean {
+  return st?.machine === "BUILDING_FROM_SD" && !isPausedStatus(st, pausedStatuses);
+}
+
 export function isPrinting(st: PrinterStatus | undefined, pausedStatuses: string[]): boolean {
-  const m = st?.machine ?? "";
-  return m === "BUILDING_FROM_SD" || pausedStatuses.includes(m);
+  return st?.machine === "BUILDING_FROM_SD" || isPausedStatus(st, pausedStatuses);
 }
 
 /** Checks a StateRule against a status. Returns a reason when it is not met. */
@@ -214,9 +227,10 @@ export function stateProblem(rule: StateRule, st: PrinterStatus | undefined, pau
       if (m !== "READY") return `printer is ${m}; needs READY (refused while printing)`;
       return st.moveMode === "MOVING" ? "printer is moving" : undefined;
     case "printing":
+      if (isPausedStatus(st, pausedStatuses)) return "the print is already paused";
       return m === "BUILDING_FROM_SD" ? undefined : `printer is ${m}; nothing to pause`;
     case "paused":
-      return pausedStatuses.includes(m) ? undefined : `printer is ${m}; nothing to resume`;
+      return isPausedStatus(st, pausedStatuses) ? undefined : `printer is ${m}; nothing to resume`;
     case "notPrinting":
       return isPrinting(st, pausedStatuses) && !recentCancel ? `printer is ${m}; temperatures are not changed during a print` : undefined;
   }

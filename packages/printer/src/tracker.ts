@@ -4,6 +4,7 @@ import { EventEmitter } from "node:events";
 import type { PrinterStatus } from "@morphix/shared";
 import { baseName } from "./protocol";
 import { DEFAULT_PAUSED_STATUSES, STATUS_BUILDING, STATUS_READY } from "./control";
+import { isPausedStatus } from "./machine";
 
 export type JobPhase = "idle" | "printing" | "paused" | "completed" | "cancelled" | "failed";
 
@@ -54,7 +55,7 @@ export interface ActivePrint {
 /** For app start-up: is the printer already running (or paused in) a job? */
 export function detectActivePrint(status: PrinterStatus, pausedStatuses: string[] = DEFAULT_PAUSED_STATUSES): ActivePrint | null {
   if (!status.online) return null;
-  const paused = pausedStatuses.includes(status.machine ?? "");
+  const paused = isPausedStatus(status, pausedStatuses);
   if (status.machine !== STATUS_BUILDING && !paused) return null;
   return {
     fileName: status.currentFile ? baseName(status.currentFile) : undefined,
@@ -143,8 +144,8 @@ export class JobTracker {
     }
 
     const machine = status.machine ?? "";
-    const building = machine === STATUS_BUILDING;
-    const paused = this.paused.includes(machine);
+    const paused = isPausedStatus(status, this.paused);
+    const building = machine === STATUS_BUILDING && !paused;
     const file = status.currentFile ? baseName(status.currentFile) : undefined;
 
     if (!this.active) {

@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
   ControllerDisabledError,
+  detectActivePrint,
+  JobTracker,
   InvalidFileNameError,
   PrintAuthorizationError,
   PrinterObserver,
@@ -269,10 +271,42 @@ describe("QD330Controller: start, pause, resume, cancel", () => {
     expect(p.error).toMatch(/PAUSE_FROM_SD/);
 
     const c2 = rig.controller({ pausedStatuses: ["PAUSED", "PAUSE_FROM_SD"] });
-    expect((await c2.pause({ requestedBy: "touch" })).error).toMatch(/nothing to pause/); // already paused
+    expect((await c2.pause({ requestedBy: "touch" })).error).toMatch(/already paused/);
     const r = await c2.resume({ jobId: "j", fileName: file, authorization: rig.auth.authorize({ jobId: "j", fileName: file, approvedBy: "touch" }) });
     expect(r.confirmed).toBe(true);
     expect((await c2.pause({ requestedBy: "touch" })).confirmed).toBe(true);
+  });
+
+  it("recognises a QD330-style pause (MachineStatus stays BUILDING_FROM_SD, MoveMode PAUSED)", async () => {
+    const rig = await startRig({ pauseViaMoveMode: true, stateChangeDelayMs: 30 }, cleanup);
+    const file = "Afinia_Cube.gx";
+    const c = rig.controller();
+    await c.startPrint({ jobId: "j", fileName: file, authorization: rig.auth.authorize({ jobId: "j", fileName: file, approvedBy: "touch" }) });
+    const p = await c.pause({ requestedBy: "touch" });
+    expect(p).toMatchObject({ acknowledged: true, confirmed: true });
+    expect(p.status).toMatchObject({ machine: "BUILDING_FROM_SD", moveMode: "PAUSED" });
+    expect((await c.pause({ requestedBy: "touch" })).error).toMatch(/already paused/);
+
+    const tracker = new JobTracker({});
+    tracker.update(p.status!);
+    expect(tracker.job.phase).toBe("paused");
+    expect(detectActivePrint(p.status!)?.paused).toBe(true);
+
+    const r = await c.resume({ jobId: "j", fileName: file, authorization: rig.auth.authorize({ jobId: "j", fileName: file, approvedBy: "touch" }) });
+    expect(r.confirmed).toBe(true);
+    expect(r.status?.moveMode).not.toBe("PAUSED");
+    tracker.update(r.status!);
+    expect(tracker.job.phase).toBe("printing");
+  });
+
+  it("does not confirm a resume while MoveMode still says PAUSED", async () => {
+    const rig = await startRig({ pauseViaMoveMode: true, failures: { ignoreResume: true } }, cleanup);
+    const file = "Afinia_Cube.gx";
+    const c = rig.controller();
+    await c.startPrint({ jobId: "j", fileName: file, authorization: rig.auth.authorize({ jobId: "j", fileName: file, approvedBy: "touch" }) });
+    expect((await c.pause({ requestedBy: "touch" })).confirmed).toBe(true);
+    const r = await c.resume({ jobId: "j", fileName: file, authorization: rig.auth.authorize({ jobId: "j", fileName: file, approvedBy: "touch" }) });
+    expect(r).toMatchObject({ acknowledged: true, confirmed: false });
   });
 
   it("refuses pause with nothing printing and resume of a different file", async () => {

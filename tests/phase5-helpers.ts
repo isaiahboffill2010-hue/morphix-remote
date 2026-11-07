@@ -50,6 +50,7 @@ export async function startRig(opts: FakeQD330Options = {}, cleanup: (fn: () => 
         uploadFinishTimeoutMs: 300,
         startConfirmTimeoutMs: 500,
         confirmTimeoutMs: 500,
+        pauseConfirmTimeoutMs: 500,
         pollIntervalMs: 20,
         packetDelayMs: 0,
         uploadFlushDelayMs: 0,

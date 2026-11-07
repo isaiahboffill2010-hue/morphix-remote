@@ -53,6 +53,8 @@ export interface FakeQD330Options {
   files?: Record<string, Uint8Array>;
   /** MachineStatus after M25. UNVERIFIED on hardware; default "PAUSED". */
   pausedStatus?: string;
+  /** Pause like the real QD330 seems to: MachineStatus stays BUILDING_FROM_SD, MoveMode becomes PAUSED. */
+  pauseViaMoveMode?: boolean;
   /** Delay before M23/M25/M24/M26 change the status. Default 0. */
   stateChangeDelayMs?: number;
   /** Send "ok" after the binary M661 payload. Default true. */
@@ -116,6 +118,9 @@ export class FakeQD330 {
   private socks = new Set<Socket>();
   private controlHolder: Socket | null = null;
   private pausedStatus: string;
+  /** QD330-style pause: MachineStatus stays BUILDING_FROM_SD and MoveMode becomes PAUSED. */
+  private pauseViaMoveMode: boolean;
+  private movePaused = false;
   private delayMs: number;
   private m661Ok: boolean;
   private pending = new Set<NodeJS.Timeout>();
@@ -130,6 +135,7 @@ export class FakeQD330 {
   constructor(opts: FakeQD330Options = {}) {
     for (const [k, v] of Object.entries(opts.files ?? {})) this.files.set(k, Buffer.from(v));
     this.pausedStatus = opts.pausedStatus ?? "PAUSED";
+    this.pauseViaMoveMode = opts.pauseViaMoveMode ?? false;
     this.delayMs = opts.stateChangeDelayMs ?? 0;
     this.m661Ok = opts.m661Ok ?? true;
     this.homeMs = opts.homeDurationMs ?? 0;
@@ -293,7 +299,7 @@ export class FakeQD330 {
         return this.reply(c, verb, [
           "Endstop: X-max: 110 Y-max: 110 Z-min: 0",
           `MachineStatus: ${this.machineStatus}`,
-          `MoveMode: ${this.machineStatus === "BUILDING_FROM_SD" ? "MOVING" : this.moveMode}`,
+          `MoveMode: ${this.movePaused ? "PAUSED" : this.machineStatus === "BUILDING_FROM_SD" ? "MOVING" : this.moveMode}`,
           "Status: S:1 L:0 J:0 F:0",
           ...(f.noLedInM119 ? [] : [`LED: ${this.led ? 1 : 0}`]),
           `CurrentFile: ${this.currentFile}`,
@@ -407,15 +413,26 @@ export class FakeQD330 {
         return this.reply(c, verb, [`File opened: ${name} Size: ${file.length}`, "File selected"]);
       }
       case "M25":
-        if (this.machineStatus === "BUILDING_FROM_SD" && !f.ignorePause) this.later(() => (this.machineStatus = this.pausedStatus));
+        if (this.machineStatus === "BUILDING_FROM_SD" && !this.movePaused && !f.ignorePause) {
+          this.later(() => {
+            if (this.pauseViaMoveMode) this.movePaused = true;
+            else this.machineStatus = this.pausedStatus;
+          });
+        }
         return this.reply(c, verb);
       case "M24":
-        if (this.machineStatus === this.pausedStatus && !f.ignoreResume) this.later(() => (this.machineStatus = "BUILDING_FROM_SD"));
+        if ((this.machineStatus === this.pausedStatus || this.movePaused) && !f.ignoreResume) {
+          this.later(() => {
+            this.movePaused = false;
+            this.machineStatus = "BUILDING_FROM_SD";
+          });
+        }
         return this.reply(c, verb);
       case "M26":
         if (!f.ignoreCancel) {
           this.later(() => {
             this.machineStatus = "READY";
+            this.movePaused = false;
             this.currentFile = "";
             this.progress = 0;
             this.layer = [0, 0];
