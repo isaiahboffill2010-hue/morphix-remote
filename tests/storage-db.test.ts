@@ -41,7 +41,7 @@ describe("database", () => {
     db.close();
     const db2 = await MorphixDb.open(s);
     expect(db2.getSetting("theme", null)).toEqual({ dark: true });
-    expect(db2.recoverInterruptedTasks()).toBe(1);
+    expect(db2.recoverInterruptedTasks()).toEqual([]);
     expect(db2.get("SELECT status FROM generation_tasks WHERE id='g1'")?.status).toBe("failed");
     expect(db2.get("SELECT state FROM projects WHERE id='p1'")?.state).toBe("failed");
     db2.close();

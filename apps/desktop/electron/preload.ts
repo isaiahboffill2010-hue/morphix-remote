@@ -1,6 +1,6 @@
 // The renderer's only bridge to the system: a fixed, typed set of calls.
 import { contextBridge, ipcRenderer, type IpcRendererEvent } from "electron";
-import { IPC, type GenerationProgress, type MorphixApi, type PrinterStatus } from "@morphix/shared";
+import { IPC, type AppEvent, type GenerationProgress, type MorphixApi, type PrinterStatus, type VoiceEvent } from "@morphix/shared";
 
 function subscribe<T>(channel: string, cb: (v: T) => void): () => void {
   const listener = (_e: IpcRendererEvent, v: T) => cb(v);
@@ -28,6 +28,22 @@ const api: MorphixApi = {
   printerStatus: () => ipcRenderer.invoke(IPC.printerStatus),
   printerInfo: () => ipcRenderer.invoke(IPC.printerInfo),
   onPrinterStatus: (cb) => subscribe<PrinterStatus>(IPC.printerStatusEvent, cb),
+
+  voiceTurn: (pcm, rate) => ipcRenderer.invoke(IPC.voiceTurn, pcm, rate),
+  voiceText: (text) => ipcRenderer.invoke(IPC.voiceText, text),
+  onVoiceEvent: (cb) => subscribe<VoiceEvent>(IPC.voiceEvent, cb),
+  onAppEvent: (cb) => subscribe<AppEvent>(IPC.appEvent, cb),
+  pendingAction: () => ipcRenderer.invoke(IPC.pendingAction),
+  confirmAction: (id) => ipcRenderer.invoke(IPC.confirmAction, id),
+  cancelAction: (id) => ipcRenderer.invoke(IPC.cancelAction, id),
+  requestRefine: (versionId) => ipcRenderer.invoke(IPC.requestRefine, versionId),
+  meshyBalance: () => ipcRenderer.invoke(IPC.meshyBalance),
+  testGemini: () => ipcRenderer.invoke(IPC.testGemini),
+
+  networkStatus: () => ipcRenderer.invoke(IPC.networkStatus),
+  wifiScan: () => ipcRenderer.invoke(IPC.wifiScan),
+  wifiConnect: (ssid, password) => ipcRenderer.invoke(IPC.wifiConnect, ssid, password),
+  wifiForget: (ssid) => ipcRenderer.invoke(IPC.wifiForget, ssid),
 };
 
 contextBridge.exposeInMainWorld("morphix", api);

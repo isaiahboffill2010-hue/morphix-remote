@@ -5,7 +5,7 @@ import { copyFileSync, existsSync, readdirSync, readFileSync, statSync, unlinkSy
 import { join } from "node:path";
 import type { Storage } from "@morphix/storage";
 
-export const SCHEMA_VERSION = 1;
+export const SCHEMA_VERSION = 2;
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
@@ -41,6 +41,19 @@ CREATE TABLE IF NOT EXISTS conversation (
 
 export type Row = Record<string, SqlValue>;
 
+/** Additive migrations: new columns only, never destructive. */
+function migrate(db: Database): void {
+  const cols = (table: string) => new Set(db.exec(`PRAGMA table_info(${table})`)[0]?.values.map((r) => String(r[1])) ?? []);
+  const add = (table: string, col: string, def: string) => {
+    if (!cols(table).has(col)) db.exec(`ALTER TABLE ${table} ADD COLUMN ${col} ${def}`);
+  };
+  add("model_versions", "kind", "TEXT NOT NULL DEFAULT 'demo'");
+  add("model_versions", "stl_rel_path", "TEXT");
+  add("model_versions", "remote_task_id", "TEXT");
+  add("generation_tasks", "parent_version_id", "TEXT");
+  add("generation_tasks", "credits", "INTEGER");
+}
+
 export class MorphixDb {
   private dirty = false;
   private flushTimer: NodeJS.Timeout | null = null;
@@ -53,6 +66,7 @@ export class MorphixDb {
     const db = existsSync(file) ? new SQL.Database(readFileSync(file)) : new SQL.Database();
     db.exec("PRAGMA foreign_keys = ON;");
     db.exec(SCHEMA);
+    migrate(db);
     db.run("INSERT OR REPLACE INTO meta(key, value) VALUES ('schema_version', ?)", [String(SCHEMA_VERSION)]);
     const m = new MorphixDb(db, file, storage);
     m.flush();
@@ -135,14 +149,26 @@ export class MorphixDb {
     this.run("INSERT OR REPLACE INTO settings(key, value) VALUES (?, ?)", [key, JSON.stringify(value)]);
   }
 
-  /** Called at startup: anything left "running" was interrupted by a crash or restart. */
-  recoverInterruptedTasks(): number {
-    const rows = this.all("SELECT id FROM generation_tasks WHERE status IN ('queued','running')");
+  /**
+   * Called at startup. Demo tasks left running are marked failed; Meshy tasks
+   * with a remote id are returned so polling can resume (credits already spent).
+   */
+  recoverInterruptedTasks(): Row[] {
     const now = new Date().toISOString();
-    for (const r of rows) {
+    const rows = this.all("SELECT * FROM generation_tasks WHERE status IN ('queued','running')");
+    const resumable = rows.filter((r) => r.provider === "meshy" && r.remote_id);
+    for (const r of rows.filter((x) => !resumable.includes(x))) {
       this.run("UPDATE generation_tasks SET status='failed', error='interrupted by restart', updated_at=? WHERE id=?", [now, r.id]);
+      this.run("UPDATE projects SET state='failed', updated_at=? WHERE id=? AND state='generating'", [now, r.project_id]);
     }
-    this.run("UPDATE projects SET state='failed', updated_at=? WHERE state='generating'", [now]);
-    return rows.length;
+    return resumable;
+  }
+
+  /** Meshy tasks created today (local time), for the daily cost cap. */
+  meshyTasksToday(): number {
+    const start = new Date();
+    start.setHours(0, 0, 0, 0);
+    const r = this.get("SELECT COUNT(*) AS n FROM generation_tasks WHERE provider='meshy' AND created_at >= ?", [start.toISOString()]);
+    return Number(r?.n ?? 0);
   }
 }

@@ -109,7 +109,55 @@ button { font: inherit; color: inherit; touch-action: manipulation; }
 .badge { padding: 6px 12px; border-radius: 10px; background: rgba(245, 184, 75, .12); color: var(--warn); font-weight: 650; font-size: 13.5px; }
 
 /* Settings */
-.settings { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; overflow-y: auto; min-height: 0; align-content: start; }
+.tabs { display: flex; gap: 8px; flex: none; }
+.tabs button { min-height: 48px; padding: 0 26px; border-radius: 12px; border: 1px solid var(--line); background: var(--panel); color: var(--muted); font-weight: 650; }
+.tabs button.on { background: var(--panel-2); color: var(--text); box-shadow: inset 0 -3px 0 var(--accent); }
+.tab-body { flex: 1; min-height: 0; overflow-y: auto; padding-right: 4px; }
+.settings-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; align-content: start; }
+.wifi-list { display: flex; flex-direction: column; gap: 6px; }
+.wifi-row { display: flex; gap: 8px; align-items: center; }
+.wifi-main { flex: 1; display: flex; gap: 12px; align-items: center; min-height: 54px; padding: 0 14px; border-radius: 12px; border: 1px solid var(--line); background: var(--panel-2); text-align: left; }
+.wifi-row.on .wifi-main { border-color: var(--ok); }
+.wifi-bars { width: 44px; color: var(--accent); letter-spacing: -2px; }
+.wifi-name { flex: 1; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .logs { font: 12px/1.45 ui-monospace, monospace; background: var(--bg); border-radius: 10px; padding: 10px; height: 180px; overflow: auto; white-space: pre-wrap; word-break: break-all; user-select: text; }
 .empty { display: grid; place-items: center; height: 100%; color: var(--muted); text-align: center; gap: 12px; }
 .toast { position: absolute; right: 16px; bottom: 16px; max-width: 420px; padding: 12px 16px; border-radius: 12px; background: #3a1f24; border: 1px solid #6b2f37; color: #ffd6d6; z-index: 9; }
+
+/* Touch scrolling: visible, finger-sized scrollbars */
+.transcript, .grid, .side, .tab-body, .logs { overscroll-behavior: contain; }
+::-webkit-scrollbar { width: 12px; height: 12px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: #33405a; border-radius: 8px; border: 3px solid transparent; background-clip: padding-box; }
+
+/* Voice */
+.mic-small { width: 46px; height: 46px; border-radius: 50%; border: 0; color: #fff; background: var(--accent); display: grid; place-items: center; flex: none; }
+.mic-small svg { width: 24px; height: 24px; }
+.mic-small.live { background: #ff5d5d; box-shadow: 0 0 0 calc(var(--lvl, 0) * 14px) rgba(255, 93, 93, .3); }
+.mic-small.busy { opacity: .6; }
+.top-voice { max-width: 420px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); }
+.bubble.draft { opacity: .75; }
+.gen-card { min-width: 360px; }
+.gen-thumb { width: 84px; height: 84px; object-fit: cover; border-radius: 10px; background: var(--panel); }
+.chip-btn { border: 1px solid var(--line); min-height: 40px; padding: 0 14px; font-weight: 600; color: var(--text); }
+.chip-btn.on { background: var(--accent); border-color: var(--accent); color: #fff; }
+.toast.info { background: #1d2a44; border-color: #34507f; color: #dce7ff; }
+.toast.warn { background: #3a3020; border-color: #6b5530; color: #ffe8c2; }
+
+/* Modals: confirmation + keyboard */
+.modal-backdrop { position: fixed; inset: 0; background: rgba(5, 8, 12, .72); display: flex; align-items: flex-end; justify-content: center; z-index: 50; }
+.confirm-sheet { width: min(640px, 94vw); margin-bottom: auto; margin-top: auto; background: var(--panel); border: 1px solid var(--line); border-radius: 18px; padding: 20px 22px; }
+.confirm-prompt { max-height: 120px; overflow-y: auto; font-size: 14.5px; line-height: 1.45; }
+.keyboard-sheet { width: 100%; background: var(--panel); border-top: 1px solid var(--line); padding: 10px 12px 12px; display: flex; flex-direction: column; gap: 8px; }
+.entry { position: relative; display: flex; align-items: center; min-height: 52px; padding: 0 14px; border-radius: 12px; background: var(--bg); border: 1px solid var(--accent); font-size: 18px; overflow: hidden; white-space: nowrap; }
+.caret { width: 2px; height: 26px; background: var(--accent); margin-left: 2px; animation: blink 1s steps(1) infinite; }
+@keyframes blink { 50% { opacity: 0; } }
+.entry-eye { position: absolute; right: 6px; min-height: 40px; }
+.keys { display: flex; flex-direction: column; gap: 6px; }
+.key-row { display: flex; gap: 6px; justify-content: center; }
+.key { flex: 1; max-width: 88px; min-height: 52px; border-radius: 10px; border: 1px solid var(--line); background: var(--panel-2); font-size: 19px; font-weight: 600; }
+.key:active { background: #2c3850; }
+.key.wide { flex: 1.6; max-width: 140px; font-size: 15px; }
+.key.space { flex: 5; max-width: none; }
+.key.on, .key.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+.key:disabled { opacity: .45; }
