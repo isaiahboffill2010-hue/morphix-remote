@@ -280,3 +280,135 @@ The printer already stores official files such as `cute-bear-keychain-with-hole.
   layer range at a time, and keep `includeTravel` off unless it is needed.
 - Uploading the `.gx` to the printer is out of scope. It must go through the approval
   gates (`packages/domain`) and only after the validation above.
+
+## AI slicer advisor
+
+`packages/slicing/src/advisor.ts` and `advised.ts`, exported from `@morphix/slicing`. The advisor
+picks slicer settings for a prepared model. A deterministic heuristic engine always answers.
+Gemini can optionally refine that answer, but the refinement is validated, clamped to safe ranges
+and falls back to the heuristic on any error.
+
+### `prepareWithAdvice(input)`
+
+This is a drop-in alternative to `preparePrint`. It takes the same input plus
+`intendedUse?: "functional" | "decorative" | "unknown"`, `description?`,
+`gemini?: AdvisorGeminiOptions | false`, `availableSlicers?` and
+`onProgress?(stage | "advise")`. It returns the normal `PreparePrintResult` plus three fields:
+
+- `advice`: a `SlicingAdvice` (see below).
+- `overhang`: an `OverhangStats` measurement of the prepared mesh.
+- `applied`: the settings actually passed to the slicer, with `overriddenByCaller` listing the
+  ones taken from `options`.
+
+```ts
+const r = await prepareWithAdvice({
+  inputPath: ".../model.stl",
+  targetHeightMm: 80,
+  description: "a phone stand",            // from the voice request
+  gemini: advisorGeminiFromEnv(),          // false when GEMINI_API_KEY is unset
+  options: { outputDir },
+});
+r.advice.reasons;   // kid-friendly lines for the report / voice
+r.applied;          // { slicer, supports, layerHeightMm, infillPercent, perimeters, brimWidthMm, orientation }
+```
+
+How it runs:
+
+1. It runs the mesh stages (load, repair, scale, orient, place) with slicing off.
+2. It measures overhangs on the prepared STL, detects slicers (unless `options.slicer` or
+   `availableSlicers` is given) and calls `adviseSlicing`.
+3. If the advice is `orientation: "keep"`, auto-orient had rotated the model, and the caller left
+   `options.orientation` unset, it re-runs the mesh stages with `"keep"` and asks for advice again.
+4. It slices the prepared STL (repair off, orientation `keep`, up axis `z`) with the advised
+   settings into the same output directory. The result keeps the first pass's input report,
+   repair summary, scale, orientation and up axis.
+
+Anything set explicitly in `options` wins over the advice: `supports`, `layerHeightMm`,
+`infillPercent`, `perimeters`, `brimWidthMm`, `orientation` and `slicer`. A model that is too big
+stops before slicing, with `slicer.reason = "too-large"`. When no slicer is installed you get the
+usual `slicer-not-installed` result, plus an advice warning that explains how to install one.
+
+### `adviseSlicing(input, { gemini })` and `heuristicAdvice(input)`
+
+Input: `{ size, validation?, mesh?, overhang?, orientation?, intendedUse?, description?,
+availableSlicers?, buildVolume?, lockOrientation? }`.
+
+Output (`SlicingAdvice`): `{ slicer, slicerPath, layerHeightMm, infillPercent, walls, supports,
+orientation, brim, brimWidthMm, intendedUse, reasons[], warnings[], confidence, source:
+"heuristic" | "gemini", model?, fallback? }`.
+
+Heuristic rules (all values are clamped to `ADVICE_LIMITS`: layer 0.10–0.30 mm, infill 5–80 %,
+walls 2–5, brim 0–10 mm):
+
+| Situation | Advice |
+| --- | --- |
+| No overhang area, or less than 5 % at more than 45°, less than 0.5 % at more than 60°, and max angle under 65° | `supports: "none"` |
+| Overhangs, with at least 90 % of their area above only the plate | `supports: "buildplate"` |
+| Overhangs above other parts of the model | `supports: "auto"` |
+| No overhang data, only the orientation candidate | `auto` if more than 2 % of the surface overhangs (lower confidence) |
+| Height / smallest footprint side > 2.5 and height > 30 mm | brim 5 mm (8 mm when the ratio is > 4) |
+| Bed contact < 15 % of the footprint and < 150 mm² (height > 15 mm) | brim 5 mm |
+| Footprint side > 150 mm | brim 4 mm (corner curl) |
+| Functional | infill 30 %, 3 walls; "strong", "bracket", "hook", "gear"… → 40 %, 4 walls |
+| Decorative | infill 10 % |
+| Largest side < 25 mm | 0.12 mm layers |
+| Decorative and largest side < 60 mm | 0.15 mm layers |
+| Height > 150 mm or volume > 250 cm³ | 0.28 mm draft (0.25 mm if functional) |
+| Decorative, auto-orient rotated it, and the original pose has < 10 % overhang | `orientation: "keep"` |
+| Slicer | PrusaSlicer if installed, otherwise OrcaSlicer, otherwise `null` plus an install hint |
+
+`intendedUse: "unknown"` is inferred from keywords in the description (`inferIntendedUse`).
+
+`overhangStats(mesh)` measures the oriented mesh: total area, bed contact, overhang area above
+45° and above 60°, the steepest overhang angle covering at least 0.1 % of the surface, and
+`plateReachableRatio`. That ratio comes from a 64×64 XY grid. For each overhang sample it looks
+at the highest upward-facing surface below. If there is none, the overhang is above the plate.
+If that surface is within 0.5 mm, the face is resting on the model. Otherwise, supports would
+stand on the model. Faces of separate shells that rest on each other count as overhang area,
+but also as reachable.
+
+### Gemini refinement
+
+Gemini refinement uses REST `models/{model}:generateContent` with
+`generationConfig.responseMimeType = "application/json"` and `responseJsonSchema =
+ADVISOR_RESPONSE_SCHEMA`. The API key goes only in the `x-goog-api-key` header. The model
+defaults to `gemini-3.8-flash` (`DEFAULT_GEMINI_TEXT_MODEL`); override it with
+`MORPHIX_GEMINI_TEXT_MODEL`. `advisorGeminiFromEnv(env)` reads `GEMINI_API_KEY` and
+`MORPHIX_GEMINI_TEXT_MODEL`. `fetch` is injectable and the timeout defaults to 20 s.
+
+The prompt sends only measured facts (size, volume, watertightness, overhang numbers, the
+description) and the heuristic suggestion, never the mesh. The answer goes through these
+safeguards:
+
+- Every field is type-checked; an invalid answer means fallback.
+- Numbers are clamped to `ADVICE_LIMITS`, and confidence is capped at 0.95.
+- The slicer is always the heuristic's choice, because Gemini cannot install software.
+- Gemini may add supports, but it cannot remove them when the overhang is real (≥ 1 % severe
+  or ≥ 8 % overhang).
+- `buildplate` is upgraded to `auto` when the overhangs sit above the model.
+- The brim on tall, thin parts is kept.
+
+On any failure (network, HTTP error, timeout, blocked prompt, bad JSON) you get the heuristic
+advice with `fallback` set to a serialised `MX-SLICE-012`, plus a closing reason saying the
+built-in rules were used.
+
+### Slicer wrapper additions (backwards compatible)
+
+`SliceOptions` and `PreparePrintOptions` gain two optional fields, `brimWidthMm` and
+`perimeters`. When omitted, nothing changes and the profile values are used.
+
+- PrusaSlicer: they become `--brim-width <mm>` and `--perimeters <n>`.
+- OrcaSlicer: they set `brim_type` (`outer_only` / `no_brim`), `brim_width` and `wall_loops`
+  in the generated process JSON.
+- `gxFromGcode` takes an optional `shells` argument, so the `.gx` header reports the perimeters
+  actually used.
+
+### Integration (coordinator)
+
+- In `apps/desktop/electron/printing.ts`, replace `preparePrint(...)` with
+  `prepareWithAdvice({ ...sameInput, description: project.prompt, gemini: advisorGeminiFromEnv() })`.
+  Store `advice` and `applied` in the preparation summary and show `advice.reasons` in the
+  report.
+- Pass `trackPrepare(jobs, jobId).onProgress` as `onProgress`, then call `finish(result)` (see
+  [JOBS.md](JOBS.md)).
+- Add `MORPHIX_GEMINI_TEXT_MODEL=` (optional) to `config/morphix.env.example`.

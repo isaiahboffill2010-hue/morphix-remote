@@ -20,6 +20,8 @@ export * from "./gx";
 export * from "./profiles";
 export * from "./slicer";
 export * from "./prepare";
+export * from "./advisor";
+export * from "./advised";
 
 export interface SizeCheck {
   size: { x: number; y: number; z: number };

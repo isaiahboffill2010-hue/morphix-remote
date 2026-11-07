@@ -2,7 +2,10 @@
 // formats recorded from the real printer (firmware v2.1.3): "CMD X Received."
 // … "ok", the binary M661 list, M28 packet framing with CRC checks, and the
 // M23/M25/M24/M26 state changes. It can also misbehave on purpose.
-// Strings marked UNVERIFIED are guesses; the real printer may differ.
+// Machine controls are emulated too: G28 homing (MoveMode MOVING, then M114 at
+// 110/110/220), M146 light (M119 "LED:"), M106/M107 fan, M104/M140 targets with
+// heating over time (M105), M18 motors, M112.
+// Strings and behaviours marked UNVERIFIED are guesses; the real printer may differ.
 import { createServer, type Server, type Socket } from "node:net";
 import {
   crc32,
@@ -33,6 +36,23 @@ export interface FakeQD330Failures {
   ignorePause?: boolean;
   ignoreResume?: boolean;
   ignoreCancel?: boolean;
+  /** Machine commands acknowledged but without effect. */
+  ignoreHome?: boolean;
+  ignoreLight?: boolean;
+  ignoreFan?: boolean;
+  ignoreTemps?: boolean;
+  ignoreMotors?: boolean;
+  /** Verbs answered with "Error: ..." (e.g. ["M146"]). */
+  rejectVerbs?: string[];
+  /** M119 has no "LED:" line. */
+  noLedInM119?: boolean;
+  /** M112 drops the connection after replying (a halted firmware). */
+  dropAfterM112?: boolean;
+}
+
+export interface FakeHeater {
+  current: number;
+  target: number;
 }
 
 export interface FakeQD330Options {
@@ -44,6 +64,15 @@ export interface FakeQD330Options {
   stateChangeDelayMs?: number;
   /** Send "ok" after the binary M661 payload. Default true. */
   m661Ok?: boolean;
+  /** How long G28 keeps MoveMode at MOVING. Default 0. */
+  homeDurationMs?: number;
+  /** °C per second while heating / cooling. Defaults 20 / 10. */
+  heatRatePerSec?: number;
+  coolRatePerSec?: number;
+  /** Heater targets set by M23 (the .gx would set them). Default nozzle 210, bed 50. */
+  printTargets?: { nozzle: number; bed: number };
+  /** M26 also sets both targets to 0. UNVERIFIED on hardware; default false. */
+  cancelClearsTargets?: boolean;
   failures?: FakeQD330Failures;
 }
 
@@ -77,6 +106,19 @@ export class FakeQD330 {
   readonly uploads: { name: string; ok: boolean; error?: string }[] = [];
   /** Times M601 was refused because another connection held control (should stay 0 for Morphix). */
   controlConflicts = 0;
+  /** M119 "LED:" and the last M146 colour. */
+  led = true;
+  ledColor = { r: 255, g: 255, b: 255 };
+  /** Last M106 S value (0-255); M107 sets 0. */
+  fanPwm = 0;
+  /** Ambient = the starting temperature, so an untouched fake always reports the recorded M105 line. */
+  readonly nozzle: FakeHeater = { current: 26.9, target: 0 };
+  readonly bed: FakeHeater = { current: 24.4, target: 0 };
+  position = { x: 110.037, y: 110.037, z: 220 };
+  motorsEnabled = true;
+  homeCount = 0;
+  /** Set by M112. UNVERIFIED: what the real firmware does afterwards. */
+  emergencyHalted = false;
 
   private server: Server | null = null;
   private socks = new Set<Socket>();
@@ -85,13 +127,51 @@ export class FakeQD330 {
   private delayMs: number;
   private m661Ok: boolean;
   private pending = new Set<NodeJS.Timeout>();
+  private homeMs: number;
+  private heatRate: number;
+  private coolRate: number;
+  private printTargets: { nozzle: number; bed: number };
+  private cancelClearsTargets: boolean;
+  private ambient = { nozzle: 26.9, bed: 24.4 };
+  private simAt = Date.now();
 
   constructor(opts: FakeQD330Options = {}) {
     for (const [k, v] of Object.entries(opts.files ?? {})) this.files.set(k, Buffer.from(v));
     this.pausedStatus = opts.pausedStatus ?? "PAUSED";
     this.delayMs = opts.stateChangeDelayMs ?? 0;
     this.m661Ok = opts.m661Ok ?? true;
+    this.homeMs = opts.homeDurationMs ?? 0;
+    this.heatRate = opts.heatRatePerSec ?? 20;
+    this.coolRate = opts.coolRatePerSec ?? 10;
+    this.printTargets = opts.printTargets ?? { nozzle: 210, bed: 50 };
+    this.cancelClearsTargets = opts.cancelClearsTargets ?? false;
     this.failures = opts.failures ?? {};
+  }
+
+  /** Fan speed in percent (from the last M106/M107). */
+  get fanPercent(): number {
+    return Math.round((this.fanPwm * 100) / 255);
+  }
+
+  /** Test helper: set a heater's temperature (and optionally its target). */
+  setTemp(heater: "nozzle" | "bed", current: number, target?: number): void {
+    this.simulate();
+    this[heater].current = current;
+    if (target !== undefined) this[heater].target = target;
+  }
+
+  /** Moves both heaters toward their targets (or ambient) for the time since the last call. */
+  private simulate() {
+    const now = Date.now();
+    const dt = (now - this.simAt) / 1000;
+    this.simAt = now;
+    for (const k of ["nozzle", "bed"] as const) {
+      const h = this[k];
+      const goal = h.target > 0 ? h.target : this.ambient[k];
+      const rate = goal > h.current ? this.heatRate : this.coolRate;
+      const step = rate * dt;
+      h.current = Math.abs(goal - h.current) <= step ? goal : h.current + Math.sign(goal - h.current) * step;
+    }
   }
 
   /** Listens on 127.0.0.1 only. Returns the port. */
@@ -128,6 +208,8 @@ export class FakeQD330 {
     this.progress = 100;
     this.layer = [this.layer[1], this.layer[1]];
     this.machineStatus = "READY";
+    this.simulate();
+    this.nozzle.target = this.bed.target = 0;
   }
 
   /** Test helper: the print stops on its own (e.g. a printer-side fault or someone cancels at the printer). */
@@ -194,6 +276,7 @@ export class FakeQD330 {
     const f = this.failures;
     if (f.dropOn?.includes(verb)) return void c.sock.destroy();
     if (f.silent?.includes(verb)) return;
+    if (f.rejectVerbs?.includes(verb)) return this.reply(c, verb, ["Error: command rejected"]); // UNVERIFIED wording
 
     switch (verb) {
       case "M601": {
@@ -216,13 +299,74 @@ export class FakeQD330 {
           `MachineStatus: ${this.machineStatus}`,
           `MoveMode: ${this.machineStatus === "BUILDING_FROM_SD" ? "MOVING" : this.moveMode}`,
           "Status: S:1 L:0 J:0 F:0",
-          "LED: 1",
+          ...(f.noLedInM119 ? [] : [`LED: ${this.led ? 1 : 0}`]),
           `CurrentFile: ${this.currentFile}`,
         ]);
-      case "M105":
-        return this.reply(c, verb, ["T0:26.9/0.0 T1:0.0/0.0 B:24.4/0.0"]);
-      case "M114":
-        return this.reply(c, verb, ["X:110.037 Y:110.037 Z:220.000 A:0.000 B:0"]);
+      case "M105": {
+        this.simulate();
+        const t = (h: FakeHeater) => `${h.current.toFixed(1)}/${h.target.toFixed(1)}`;
+        return this.reply(c, verb, [`T0:${t(this.nozzle)} T1:0.0/0.0 B:${t(this.bed)}`]);
+      }
+      case "M114": {
+        const p = this.position;
+        return this.reply(c, verb, [`X:${p.x.toFixed(3)} Y:${p.y.toFixed(3)} Z:${p.z.toFixed(3)} A:0.000 B:0`]);
+      }
+      case "G28": {
+        // UNVERIFIED: whether the real printer answers before or after the move, and what it does mid-print.
+        if (this.machineStatus === "READY" && !f.ignoreHome) {
+          this.moveMode = "MOVING";
+          const done = () => {
+            this.position = { x: 110, y: 110, z: 220 };
+            this.moveMode = "READY";
+            this.motorsEnabled = true;
+            this.homeCount++;
+          };
+          if (this.homeMs <= 0) done();
+          else {
+            const t = setTimeout(() => (this.pending.delete(t), done()), this.homeMs);
+            this.pending.add(t);
+          }
+        }
+        return this.reply(c, verb);
+      }
+      case "M146": {
+        // UNVERIFIED (FlashForge Adventurer syntax): "M146 r255 g255 b255 F0".
+        const m = /r(\d+)\s+g(\d+)\s+b(\d+)/i.exec(cmd);
+        if (!m) return this.reply(c, verb, ["Error: bad parameters"]);
+        if (!f.ignoreLight) {
+          this.ledColor = { r: Number(m[1]), g: Number(m[2]), b: Number(m[3]) };
+          this.led = this.ledColor.r + this.ledColor.g + this.ledColor.b > 0;
+        }
+        return this.reply(c, verb);
+      }
+      case "M106": {
+        const m = /S(\d+)/i.exec(cmd);
+        if (!f.ignoreFan) this.fanPwm = Math.min(255, Number(m?.[1] ?? 255));
+        return this.reply(c, verb);
+      }
+      case "M107":
+        if (!f.ignoreFan) this.fanPwm = 0;
+        return this.reply(c, verb);
+      case "M104":
+      case "M140": {
+        const m = /S(\d+(?:\.\d+)?)/i.exec(cmd);
+        if (!m) return this.reply(c, verb, ["Error: bad parameters"]);
+        if (!f.ignoreTemps) {
+          this.simulate();
+          (verb === "M104" ? this.nozzle : this.bed).target = Number(m[1]);
+        }
+        return this.reply(c, verb);
+      }
+      case "M18":
+        if (!f.ignoreMotors) this.motorsEnabled = false;
+        return this.reply(c, verb);
+      case "M112":
+        this.emergencyHalted = true;
+        this.simulate();
+        this.nozzle.target = this.bed.target = 0;
+        this.reply(c, verb);
+        if (f.dropAfterM112) c.sock.destroy();
+        return;
       case "M27":
         return this.reply(c, verb, [`SD printing byte ${this.progress}/100`, `Layer: ${this.layer[0]}/${this.layer[1]}`]);
       case "M661": {
@@ -259,6 +403,9 @@ export class FakeQD330 {
             this.currentFile = name;
             this.progress = 0;
             this.layer = [0, 100];
+            this.simulate();
+            this.nozzle.target = this.printTargets.nozzle;
+            this.bed.target = this.printTargets.bed;
           });
         }
         return this.reply(c, verb, [`File opened: ${name} Size: ${file.length}`, "File selected"]);
@@ -276,6 +423,10 @@ export class FakeQD330 {
             this.currentFile = "";
             this.progress = 0;
             this.layer = [0, 0];
+            if (this.cancelClearsTargets) {
+              this.simulate();
+              this.nozzle.target = this.bed.target = 0;
+            }
           });
         }
         return this.reply(c, verb);

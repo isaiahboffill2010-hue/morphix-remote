@@ -11,11 +11,12 @@ Everything lives in `packages/printer/src` and is exported from `@morphix/printe
 | `protocol.ts` | Wire format: command framing, reply parsing, upload packets, CRC-32, M661 list parser. Pure functions |
 | `names.ts` | `sanitizeFileName` (uploads), `assertStoredFileName` (files already on the printer) |
 | `auth.ts` | `authorizePrint`, `PrintAuthorizer`, `PrintAuthorization` tokens |
-| `control.ts` | `QD330Controller` (listFiles, uploadFile, startPrint, pause, resume, cancel) |
+| `control.ts` | `QD330Controller`: job control (listFiles, uploadFile, startPrint, pause, resume, cancel) and machine control (readInfo, home, setLight, setFan, setNozzleTemp, setBedTemp, coolDown, motorsOff, emergencyStop, capabilities) |
+| `machine.ts` | Machine-control helpers: command builders, hard limits, `allowUnverified` flags, the command table behind `capabilities()` |
 | `tracker.ts` | `JobTracker` (progress, completion/failure events), `detectActivePrint` (restart recovery) |
 | `fake-server.ts` | `FakeQD330`, a fake printer on 127.0.0.1 for tests and demos |
 
-Tests: `tests/phase5-*.test.ts`. They only ever connect to 127.0.0.1; `tests/phase5-helpers.ts` patches `Socket.connect` so any other host fails the test.
+Tests: `tests/phase5-*.test.ts` and `tests/printer-control-*.test.ts`. They only ever connect to 127.0.0.1; `tests/phase5-helpers.ts` patches `Socket.connect` so any other host fails the test.
 
 ---
 
@@ -36,6 +37,7 @@ Tests: `tests/phase5-*.test.ts`. They only ever connect to 127.0.0.1; `tests/pha
 7. **File names.** Uploads are sanitised to `[A-Za-z0-9._-]`, ≤ 64 chars, `.gx` only (`.g` only with `allowPlainGcode: true`; plain `.g` stalled at 0% on the real printer). Files already on the printer (e.g. official Afinia files with spaces) are passed through `assertStoredFileName`, which rejects `/ \ ~`, control characters and leading dots, so nothing can inject a second command.
 8. **No direct G-code.** The controller has no method that sends arbitrary commands; commands are built only from the verbs listed below.
 9. **One thing at a time.** All control and status traffic goes through one queue; every session is `M601 S1 … M602`.
+10. **Machine controls** ([below](#machine-controls)) are behind the same `enabled` switch. Commands not verified on this printer also need their own `allowUnverified` flag, set by the operator one at a time after the [machine checklist](#machine-controls-validation-checklist). Heating needs an explicit `approvedBy` and arms an idle safety timer. Repeated taps are debounced. Cancel, cool-down and emergency stop are never debounced.
 
 ---
 
@@ -138,6 +140,100 @@ Reply formats copied from the real printer: `CMD X Received.` … `ok`, `Control
 
 ---
 
+## Machine controls
+
+Same controller, same `ControlResult` shape, same log. `protocolVerified` is `true` only for commands checked on the real QD330.
+
+```ts
+const controller = new QD330Controller({
+  enabled: settings.printControlsEnabled === true,
+  host: "192.168.10.51",
+  allowUnverified: {           // all default false; set one by one after the checklist below
+    light: false,              // setLight (M146)
+    fan: false,                // setFan (M106/M107)
+    temperatures: false,       // setNozzleTemp, setBedTemp, coolDown (M104/M140)
+    motors: false,             // motorsOff (M18)
+    emergencyStopM112: false,  // emergencyStop also sends M112 first
+  },
+  heaterIdleTimeoutMs: 15 * 60_000, // heaters off after this long without a heating command, unless printing
+  heaterRetryMs: 30_000,            // retry interval if that cool-down could not be sent
+  minCommandIntervalMs: 1000,       // debounce for repeated machine commands
+  cancelCoolDownWindowMs: 120_000,  // after a cancel, cooling is allowed even if the status still shows the print
+  homeConfirmTimeoutMs: 60_000,     // G28 reply + confirmation
+  homePosition: { x: 110, y: 110, z: 220 }, // verified
+  maxNozzleC: 250, maxBedC: 100,    // may be lowered, never raised (constructor throws)
+});
+```
+
+| Method | Command(s) | Flag | State rule | Confirmed when | Verified |
+|---|---|---|---|---|---|
+| `readInfo({ requestedBy? })` | M115 | — (read-only, works while disabled) | any | machine type/firmware parsed | yes |
+| `home({ requestedBy, reason? })` | G28 | — | READY and not MOVING | M114 at `homePosition` (±0.5 mm) and MoveMode ≠ MOVING | yes |
+| `setLight(true \| false \| {r,g,b}, { requestedBy })` | `M146 r<r> g<g> b<b> F0` | `light` | any (also while printing) | M119 `LED:` matches on/off (the colour cannot be read back) | **no** |
+| `setFan(true \| false \| 0-100, { requestedBy })` | `M106 S<0-255>` / `M107` | `fan` | any | never: no fan read-back. `acknowledged` + `note` | **no** |
+| `setNozzleTemp(c, { requestedBy, approvedBy? })` | `M104 S<c> T0` | `temperatures` | heating: READY; 0 °C: not printing (or cancel window) | M105 `T0` target = c (±0.5) | **no** |
+| `setBedTemp(c, { requestedBy, approvedBy? })` | `M140 S<c>` | `temperatures` | as above | M105 `B` target = c | **no** |
+| `coolDown({ requestedBy })` | `M104 S0 T0`, `M140 S0` | `temperatures` | not printing (or cancel window) | both targets 0 | **no** |
+| `motorsOff({ requestedBy })` | M18 | `motors` | READY and not MOVING | never: no read-back. `acknowledged` + `note` | **no** |
+| `emergencyStop({ requestedBy })` | [M112], M26, `M104 S0 T0`, `M140 S0` | M112 only with `emergencyStopM112` | any | READY and both targets 0 | M26 yes; M104/M140/M112 no → `protocolVerified: false` |
+| `capabilities(status?)` | — | — | — | — | — |
+| `heaterSafety()` | — | — | — | `{ armed, expiresAt, remainingMs, targets }` | — |
+| `dispose()` | — | — | — | stops the heater timer (call on shutdown) | — |
+
+`requestedBy` is required on every machine command: `"touch" | "voice" | "portal" | "guardian" | "system"`. It is written to every log entry together with `command` (the exact G-code, e.g. `M104 S200 T0`).
+
+**Throws (nothing sent, `rejected` log entry):**
+- `ControllerDisabledError`: controller disabled.
+- `CommandDisabledError` (a subclass of `ControllerDisabledError`, with `.command` and `.flag`): the command's `allowUnverified` flag is off. The message names the flag to set.
+- `ControlLimitError` (a `RangeError`): temperature outside 0–250 °C nozzle / 0–100 °C bed (or the lowered limits), fan outside 0–100 %, colour channel not an integer 0–255.
+- `HeaterApprovalError`: heating (target > 0) without `approvedBy: "touch" | "voice" | "portal"`. Setting 0 °C needs no approval.
+- `RateLimitedError` (with `.retryAfterMs`): the same command was accepted less than `minCommandIntervalMs` ago, or a *different* request for it is still running. An *identical* request while one is running gets the same result object (duplicate taps send once).
+- `TypeError`: missing or unknown `requestedBy`.
+
+State problems (printing, moving, unreachable) come back as a result with `sent: false` and `error`, like `pause`/`startPrint`.
+
+### Rules
+
+- **Temperatures during a print:** refused (heating and cooling). Exception: within `cancelCoolDownWindowMs` after `cancel()`/`emergencyStop()` sent M26, cooling is allowed even if the printer still reports the print. Heating is never allowed then.
+- **Heater idle timer:** every heating command (re)arms it, *before* the command is sent (if the reply is lost the heater may still be on). When it fires: if a print is running (BUILDING or paused) it re-arms for another period; otherwise it runs a cool-down logged as `{ op: "coolDown", requestedBy: "system", reason: "heater idle timeout" }`; if that cannot be sent it retries every `heaterRetryMs`. Setting both heaters to 0, `coolDown()` and `emergencyStop()` disarm it. The timer lives in the app process: if Morphix exits, the printer keeps whatever target it had.
+- **Debounce:** per command, measured from the last accepted request. Not applied to job control (`startPrint`, `pause`, `cancel`, …), `coolDown` or `emergencyStop`.
+- **Confirmation without read-back:** `setFan` and `motorsOff` can never be `confirmed` (the QD330 reports neither); they return `acknowledged: true`, `confirmed: false` and a `note`. UIs should show "sent" for these, not "failed". `home` adds a `note` when the head was already at the home position (nothing observable changed).
+
+### Emergency stop: why not M112
+
+`emergencyStop()` is **cancel + heaters off**, not M112:
+
+1. M26 (cancel) is verified on this printer and stops the job. M104/M140 S0 can only remove heat, so they are sent even when `allowUnverified.temperatures` is off.
+2. M112 is unverified here. On Marlin-like firmware it halts everything until a power cycle; on FlashForge firmware its effect is unknown (it might do nothing, or leave the printer needing a power cycle while hot). It is therefore only sent, *first*, when the operator sets `allowUnverified.emergencyStopM112` after checklist step M8.
+3. Each step is sent even if an earlier one fails, and a dropped link gets one retry on a fresh session. The result lists every step (`data.steps`), `confirmed` means READY with both targets 0.
+4. It bumps an interrupt counter: operations queued before it are dropped (`error: "not sent: an emergency stop was requested before …"`), and a confirmation wait in progress (e.g. homing, start) ends at its next poll. An upload already sending packets finishes its packets first (aborting mid-packet would leave the printer in data mode).
+5. Never debounced; duplicate taps share one run. **It does not replace the printer's power switch**: if `confirmed` is false the UI must say "use the printer's own screen or power switch".
+
+Call `tracker.noteCancelRequested()` before `emergencyStop()`, as for `cancel()`.
+
+### `capabilities()`
+
+Returns one entry per command (job and machine control) for building buttons, voice tools and portal menus:
+
+```ts
+{
+  command: "setNozzleTemp", label: "Nozzle temperature", gcode: ["M104"],
+  protocolVerified: false, flag: "temperatures", readOnly: false,
+  state: "notPrinting", approval: "heater", rateLimited: true,
+  enabled: true,        // controller enabled and flag on (read-only commands: always)
+  allowedNow: false,    // enabled and the last known state allows it
+  reason: "printer is BUILDING_FROM_SD; temperatures are not changed during a print",
+}
+```
+
+It uses the last status the controller saw (its own reads and every observer poll through `controller.transport`), or a status you pass. With no status yet, state-dependent commands report `"printer status not known yet"`. It is advisory: every method re-reads the printer before sending.
+
+### Fake printer additions
+
+`FakeQD330` now emulates G28 (`homeDurationMs` with MoveMode MOVING, then M114 at 110/110/220, `homeCount`), M146 (`led`, `ledColor`, M119 `LED:`), M106/M107 (`fanPwm`, `fanPercent`), M104/M140 targets with heating/cooling over time (`nozzle`, `bed`, `heatRatePerSec`, `coolRatePerSec`, `setTemp()`), M23 setting print targets (`printTargets`, default 210/50), M26 optionally clearing them (`cancelClearsTargets`, default false), M18 (`motorsEnabled`), M112 (`emergencyHalted`). Extra failures: `ignoreHome`, `ignoreLight`, `ignoreFan`, `ignoreTemps`, `ignoreMotors`, `rejectVerbs: ["M146"]`, `noLedInM119`, `dropAfterM112`. Untouched, it still reports the recorded M105/M114 lines exactly.
+
+---
+
 ## What is verified and what is not
 
 | Fact | Status |
@@ -155,6 +251,14 @@ Reply formats copied from the real printer: `CMD X Received.` … `ok`, `Control
 | M26 cancel → `READY` | verified |
 | M25 pause / M24 resume, and the paused MachineStatus string | **unverified** |
 | Whether the printer accepts a second control connection | unknown (controller never opens two) |
+| G28 homes X/Y to 110, Z to 220 | verified (when the reply arrives — before or after the move — unknown; 60 s timeout) |
+| G1 moves over the network | accepted but ignored (no jog controls offered) |
+| M146 light, and M119 `LED:` following it | **unverified** |
+| M106/M107 fan; whether M119 `Status: … F:` reflects the fan | **unverified** |
+| M104 `S<c> T0` / M140 `S<c>`, and M105 targets following them | **unverified** |
+| Whether M26 clears heater targets | **unknown** (emergency stop sends M104/M140 S0 anyway) |
+| M18 motors off | **unverified** |
+| M112 emergency stop | **unverified** (off unless `emergencyStopM112`) |
 
 ---
 
@@ -177,6 +281,15 @@ Reply formats copied from the real printer: `CMD X Received.` … `ok`, `Control
 7. **Pause / cancel:** buttons, voice and the Phase 4 guardian call `controller.pause({ requestedBy, reason })` / `controller.cancel(...)`. Call `tracker.noteCancelRequested()` before cancel. Show "pausing…/cancelling…" until the result is `confirmed`; if not confirmed, tell the user to use the printer's own screen.
 8. **Resume:** needs a fresh confirmation → new token for the same job and file.
 9. **Settings:** keep `printControlsEnabled: false` in shipped config. Turning it on is an operator action after sign-off (below), never something the app or the assistant does.
+
+### Machine controls (touchscreen, voice, portal)
+
+10. **Construct** the controller with `allowUnverified` read from settings (e.g. `settings.printerAllowUnverified`, default all false), and call `controller.dispose()` on app quit (after `coolDown()` if `heaterSafety().armed`).
+11. **Touchscreen:** build the machine panel from `controller.capabilities()`; refresh it on each observer status. Hide entries with `enabled: false`; grey out `allowedNow: false` and show `reason`. Suggested buttons: Home, Light on/off (+ colour), Fan 0/50/100 %, Nozzle and Bed presets (e.g. PLA 200/60) with a confirm tap → `approvedBy: "touch"`, Cool down, Motors off, and a red **Emergency stop** reachable from every screen. Show a heater countdown from `heaterSafety()`. Label results: `confirmed` → done; `acknowledged && !confirmed && note` → "sent"; otherwise show `error`. Show an "unverified" badge where `protocolVerified` is false. Catch `RateLimitedError` silently (a repeated tap).
+12. **Voice (Gemini tools):** expose `printer_home`, `printer_light(on|color)`, `printer_fan(percent)`, `printer_cool_down`, `printer_motors_off`, `printer_emergency_stop`, `printer_info` and a `printer_set_temperature(heater, celsius)` tool, all with `requestedBy: "voice"`. Heating follows the print-approval pattern: the tool only *requests* it; the main process asks "Heat the nozzle to 200 °C? Say yes to confirm" and calls `setNozzleTemp(200, { requestedBy: "voice", approvedBy: "voice" })` only after hearing yes. The model must never pass `approvedBy` itself. "Stop"/"emergency stop" maps to `emergencyStop` with no confirmation. Speak `error`/`note` back.
+13. **Portal (admin):** expose the same commands as admin-only endpoints with `requestedBy: "portal"`; heating needs a confirm dialog in the portal and then `approvedBy: "portal"`. Serve `capabilities()` and `heaterSafety()` read-only to the portal so it can render state; return the `ControlResult` as-is. Never let the portal change `enabled` or `allowUnverified` (they are constructor-only; changing them means an operator edits settings and the app restarts the controller).
+14. **Guardian:** keep using `pause`. It may use `emergencyStop({ requestedBy: "guardian" })` only if the operator wants that; it can never heat (no `approvedBy`).
+15. **Logs:** every entry has `op`, `requestedBy`, `approvedBy` (heating), `command`, `outcome`. Persist them like the job-control entries.
 
 The domain package already blocks `uploading`/`ready`/`printing` without `printControlsEnabled` and `userApproved`; keep both checks: the domain guard protects the workflow state, the controller guard protects the printer.
 
@@ -247,3 +360,59 @@ All of the following must be true and written down:
 - [ ] The user signs off on Phase 5 in `docs/PHASES.md`.
 
 Until then: `printControlsEnabled: false`, and Morphix only observes.
+
+### Machine controls validation checklist
+
+Same rules as above: on the Pi, at the printer, **user present**, one command at a time, replies recorded in `docs/PHASE5-validation.md`, hand near the power switch. Use a REPL controller with `enabled: true` and **only the one flag under test** in `allowUnverified`, e.g. `new QD330Controller({ enabled: true, host: "192.168.10.51", allowUnverified: { light: true }, log: console.log })`. After each passing step, add that flag to the app's settings; never enable a flag whose step has not passed.
+
+**M0. Info and capabilities (no flags)**
+- [ ] `readInfo({ requestedBy: "touch" })` → `confirmed: true`, firmware v2.1.3; record the raw reply.
+- [ ] `capabilities()` after `readStatus()`: every unverified command shows `enabled: false`; `home`, `cancel`, `emergencyStop` show `allowedNow: true` at READY.
+- [ ] `setLight(true, …)` with no flag throws `CommandDisabledError` naming `allowUnverified.light`; nothing happens at the printer.
+
+**M1. Home (G28, verified — re-check)**
+- [ ] Bed clear. `home({ requestedBy: "touch" })` → head homes, `confirmed: true`, position 110/110/220.
+- [ ] Record how long the G28 reply took (before or after the move). If after, keep `homeConfirmTimeoutMs` ≥ that.
+- [ ] Start a print (or use one in progress), call `home` → `sent: false`, "refused while printing".
+
+**M2. Light (M146) — flag `light`**
+- [ ] `setLight(false, …)` → light turns off. Record M119 `LED:` → result `confirmed: true` only if it reads 0.
+- [ ] `setLight(true, …)` → white again. `setLight({ r: 255, g: 0, b: 0 }, …)` → does the colour change, or only on/off? Record.
+- [ ] If the light changes but `LED:` does not follow: record it; results stay unconfirmed (leave the flag off or accept "sent" in the UI). If nothing happens: leave `light` off.
+
+**M3. Fan (M106/M107) — flag `fan`**
+- [ ] `setFan(100, …)` → the part-cooling fan spins up audibly. `setFan(50, …)` → slower. `setFan(false, …)` → stops.
+- [ ] Record M119 (`Status: S:… F:…`) before/after: if `F` follows the fan, note it so confirmation can be added later.
+- [ ] Check the hotend fan is not affected (it must stay automatic).
+
+**M4. Temperatures (M104/M140) — flag `temperatures`**
+- [ ] `setNozzleTemp(150, { requestedBy: "touch", approvedBy: "touch" })` → M105 target `T0:…/150`, `confirmed: true`, the printer's screen shows heating; temperature rises.
+- [ ] `setBedTemp(40, { requestedBy: "touch", approvedBy: "touch" })` → bed target 40, `confirmed: true`.
+- [ ] `coolDown({ requestedBy: "touch" })` → both targets 0, `confirmed: true`, temperatures fall.
+- [ ] Limits: `setNozzleTemp(251, …)` and `setBedTemp(101, …)` throw, and heating without `approvedBy` throws; nothing changes at the printer.
+- [ ] Safety timer: with `heaterIdleTimeoutMs: 60_000`, heat the nozzle to 150 and wait 1 min → targets go to 0 by themselves; log shows `coolDown` by `system`.
+- [ ] During a print: `setNozzleTemp(…)` and `coolDown()` → `sent: false`. Then `cancel()`; within 2 min `coolDown()` is accepted. Record whether M26 alone already cleared the targets (step 7 of the job checklist).
+
+**M5. Motors off (M18) — flag `motors`**
+- [ ] At READY, after homing: `motorsOff({ requestedBy: "touch" })` → the X/Y carriage can be pushed by hand (gently). Result `acknowledged: true`, `confirmed: false` with a note — expected.
+- [ ] `home()` afterwards works and re-energises the motors.
+- [ ] During a print: `motorsOff` → `sent: false`.
+
+**M6. Emergency stop (no M112)**
+- [ ] Start a print (official `.gx`), let it heat and begin. `emergencyStop({ requestedBy: "touch", reason: "validation" })` → printing stops, both targets 0, `confirmed: true`. Record how long until READY.
+- [ ] Repeat by voice ("stop") through the app once the app wiring exists.
+- [ ] Remove the partial print.
+
+**M7. Debounce**
+- [ ] Tap the Light button rapidly 5× in the app: one M146 per second at most in the log; the rest are `rejected` (`RateLimitedError`) or share the running result.
+
+**M8. M112 (optional — only if the owner wants it) — flag `emergencyStopM112`**
+- [ ] Only with the user's explicit agreement, at READY with heaters cold first: send `emergencyStop` with `emergencyStopM112: true`. Record exactly what the printer does (halt? needs power cycle? screen message?) and whether M26/M104/M140 still work afterwards.
+- [ ] If it requires a power cycle or leaves anything in an unclear state, **leave the flag off**: cancel + cool-down is the emergency stop.
+
+### Before machine flags may be turned on in the app
+
+- [ ] Each flag's step (M2–M5, M8) passed with the user present and replies are recorded.
+- [ ] `heaterIdleTimeoutMs` agreed with the owner (default 15 min) and M4's timer check passed.
+- [ ] Emergency stop (M6) is reachable from every screen and by voice, and the UI tells the user to use the printer's screen/power switch when it is not `confirmed`.
+- [ ] Voice heating goes through a spoken confirmation in the main process; the portal requires a confirm dialog.
