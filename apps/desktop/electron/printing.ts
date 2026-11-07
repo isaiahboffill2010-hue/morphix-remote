@@ -517,7 +517,8 @@ function describeRepair(r: Record<string, unknown>): string[] {
 }
 
 export function formatDuration(s: number): string {
-  const h = Math.floor(s / 3600);
-  const m = Math.round((s % 3600) / 60);
+  const mins = Math.round(s / 60);
+  const h = Math.floor(mins / 60);
+  const m = mins % 60;
   return h ? `${h} h ${m} min` : `${m} min`;
 }

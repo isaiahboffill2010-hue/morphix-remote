@@ -118,8 +118,9 @@ button { font: inherit; color: inherit; touch-action: manipulation; }
 /* Library */
 .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 12px; overflow-y: auto; min-height: 0; align-content: start; }
 .tile { border-radius: var(--radius); border: 1px solid var(--line); background: var(--panel); padding: 0; text-align: left; overflow: hidden; }
-.tile .thumb { aspect-ratio: 4 / 3; background: var(--panel-2); display: grid; place-items: center; color: var(--muted); }
-.tile .thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.tile { display: flex; flex-direction: column; }
+.tile .thumb { aspect-ratio: 4 / 3; background: var(--panel-2); display: grid; place-items: center; color: var(--muted); overflow: hidden; flex: none; }
+.tile .thumb img { width: 100%; height: 100%; object-fit: contain; display: block; background: #fff; }
 .tile .meta { padding: 10px 12px; }
 .tile .title { font-weight: 650; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
