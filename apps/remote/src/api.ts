@@ -1,12 +1,11 @@
-const DEFAULT_REMOTE_URL = "https://3daimodel-morphix.taila52865.ts.net";
-
-export const API = ((import.meta.env.VITE_MORPHIX_REMOTE_URL as string | undefined) || DEFAULT_REMOTE_URL).replace(/\/$/, "");
+// Production uses Vercel's same-origin /api proxy. The override is useful for
+// local development against a Pi directly.
+export const API = (import.meta.env.VITE_MORPHIX_REMOTE_URL as string | undefined)?.replace(/\/$/, "") ?? "";
 const key = "morphix.remote.token";
 export const token = () => localStorage.getItem(key) ?? "";
 export const saveToken = (v: string) => localStorage.setItem(key, v);
 export const forgetToken = () => localStorage.removeItem(key);
 export async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
-  if (!API) throw new Error("VITE_MORPHIX_REMOTE_URL is not configured");
   const headers = new Headers(init.headers); if (token()) headers.set("Authorization", `Bearer ${token()}`);
   if (init.body && typeof init.body === "string") headers.set("Content-Type", "application/json");
   const res = await fetch(`${API}${path}`, { ...init, headers, cache: "no-store" });
