@@ -28,7 +28,8 @@ export function createMockApi(): MorphixApi {
   };
   return {
     getSettings: async () => ({
-      storageRoot: "(browser preview)", printerHost: "192.168.10.51",
+      storageRoot: "(browser preview)",
+      ai: { assistant: "demo", geminiModel: "gemini-3.8-live", generator: "demo", meshyModel: "meshy-6", previewCredits: 0, refineCredits: 0, dailyLimit: 15, usedToday: 0 }, printerHost: "192.168.10.51",
       cameraStreamUrl: "http://192.168.10.51:8080/?action=stream", cameraSnapshotUrl: "http://192.168.10.51:8080/?action=snapshot",
       printerPollSeconds: 5, demoMode: true,
       keys: { gemini: false, meshy: false, vultr: false, tiger: false, swarms: false, auth0: false },
@@ -52,7 +53,7 @@ export function createMockApi(): MorphixApi {
         if (n < 100) genSubs.forEach((cb) => cb({ taskId, projectId: p.id, status: "running", progress: n, stage: "Demo: building mesh" }));
         else {
           clearInterval(timer);
-          const v: ModelVersion = { id: id(), projectId: p.id, version: 1, source: "demo", format: "stl", url: CUBE_STL, bytes: 1, targetHeightMm: null, createdAt: t() };
+          const v: ModelVersion = { id: id(), projectId: p.id, version: 1, source: "demo", kind: "demo", format: "stl", url: CUBE_STL, stlUrl: CUBE_STL, thumbnailUrl: null, bytes: 1, targetHeightMm: null, createdAt: t() };
           versions.push(v);
           p.latestVersionId = v.id;
           p.state = "reviewing";
@@ -85,5 +86,24 @@ export function createMockApi(): MorphixApi {
     printerStatus: async () => status,
     printerInfo: async () => ({ machineType: "Afinia 3D QD330", machineName: "QD330", firmware: "v2.1.3" }),
     onPrinterStatus: () => () => {},
+    voiceTurn: async () => {},
+    voiceText: async () => {},
+    onVoiceEvent: () => () => {},
+    onAppEvent: () => () => {},
+    pendingAction: async () => null,
+    confirmAction: async () => {},
+    cancelAction: async () => {},
+    requestRefine: async () => {},
+    meshyBalance: async () => ({ error: "preview" }),
+    testGemini: async () => ({ ok: false, message: "preview" }),
+    networkStatus: async () => ({ hostname: "3dAImodel", wifi: { device: "wlan0", state: "connected", ssid: "hatsv2", ip: "192.168.86.38/24", signal: 72 }, ethernet: { device: "eth0", state: "connected", connection: "printer-lan", ip: "192.168.10.1/24" } }),
+    wifiScan: async () => [
+      { ssid: "hatsv2", signal: 72, security: "WPA2", inUse: true, saved: true },
+      { ssid: "Hackathon-Guest", signal: 64, security: "WPA2", inUse: false, saved: false },
+      { ssid: "CoffeeShop", signal: 41, security: "", inUse: false, saved: true },
+      { ssid: "Neighbour 5G", signal: 22, security: "WPA3", inUse: false, saved: false },
+    ],
+    wifiConnect: async (ssid) => ({ ok: true, message: `Connected to ${ssid}` }),
+    wifiForget: async (ssid) => ({ ok: true, message: `Forgot ${ssid}` }),
   };
 }

@@ -61,3 +61,4 @@ export class DemoAssistant implements Assistant {
     };
   }
 }
+export * from "./live";

@@ -19,9 +19,13 @@ export interface ModelVersion {
   projectId: string;
   version: number;
   source: "demo" | "meshy";
+  kind: "demo" | "preview" | "refine";
   format: "stl" | "glb";
   /** URL the renderer can load (served by the local app server). */
   url: string;
+  /** Printable STL for this version, when one exists. */
+  stlUrl: string | null;
+  thumbnailUrl: string | null;
   bytes: number;
   targetHeightMm: number | null;
   createdAt: string;
@@ -35,6 +39,8 @@ export interface GenerationProgress {
   stage: string;
   error?: string;
   versionId?: string;
+  thumbnailUrl?: string;
+  kind?: "preview" | "refine" | "demo";
 }
 
 export interface PrinterTemps {
@@ -78,8 +84,20 @@ export interface RecordingResult {
   proposedPrompt?: string;
 }
 
+export interface AiStatus {
+  assistant: "gemini-live" | "demo";
+  geminiModel: string;
+  generator: "meshy" | "demo";
+  meshyModel: string;
+  previewCredits: number;
+  refineCredits: number;
+  dailyLimit: number;
+  usedToday: number;
+}
+
 export interface AppSettings {
   storageRoot: string;
+  ai: AiStatus;
   printerHost: string;
   cameraStreamUrl: string;
   cameraSnapshotUrl: string;
@@ -100,6 +118,47 @@ export interface SystemInfo {
   uptimeSeconds: number;
 }
 
+/** An action that costs money or changes things; waits for the user's explicit OK. */
+export interface PendingAction {
+  id: string;
+  kind: "generate" | "refine";
+  title: string;
+  prompt: string;
+  projectId: string | null;
+  versionId: string | null;
+  credits: number;
+  createdAt: string;
+}
+
+export type VoiceEvent =
+  | { type: "status"; state: "connecting" | "ready" | "thinking" | "speaking" | "idle" | "offline" }
+  | { type: "user-text"; text: string }
+  | { type: "assistant-text"; text: string }
+  | { type: "audio"; pcm: ArrayBuffer; sampleRate: number }
+  | { type: "interrupted" }
+  | { type: "turn-complete"; user: AssistantTurn | null; assistant: AssistantTurn | null }
+  | { type: "error"; message: string };
+
+export type AppEvent =
+  | { type: "pending"; action: PendingAction | null }
+  | { type: "navigate"; page: "viewer" | "library" | "assistant"; projectId?: string }
+  | { type: "model-height"; versionId: string; heightMm: number }
+  | { type: "notice"; level: "info" | "warn" | "error"; message: string };
+
+export interface WifiNetwork {
+  ssid: string;
+  signal: number;
+  security: string;
+  inUse: boolean;
+  saved: boolean;
+}
+
+export interface NetworkStatus {
+  hostname: string;
+  wifi: { device: string; state: string; ssid: string | null; ip: string | null; signal: number | null } | null;
+  ethernet: { device: string; state: string; connection: string | null; ip: string | null } | null;
+}
+
 /** Everything the renderer may call. Exposed by preload as window.morphix. */
 export interface MorphixApi {
   getSettings(): Promise<AppSettings>;
@@ -109,7 +168,7 @@ export interface MorphixApi {
 
   listProjects(): Promise<Project[]>;
   getProject(id: string): Promise<{ project: Project; versions: ModelVersion[] } | null>;
-  createProjectFromPrompt(prompt: string): Promise<{ project: Project; taskId: string }>;
+  createProjectFromPrompt(prompt: string): Promise<{ project: Project; taskId: string } | { pending: PendingAction }>;
   setTargetHeight(versionId: string, heightMm: number): Promise<ModelVersion>;
   saveThumbnail(versionId: string, pngDataUrl: string): Promise<void>;
   onGenerationProgress(cb: (p: GenerationProgress) => void): () => void;
@@ -121,6 +180,23 @@ export interface MorphixApi {
   printerStatus(): Promise<PrinterStatus>;
   printerInfo(): Promise<PrinterInfo>;
   onPrinterStatus(cb: (s: PrinterStatus) => void): () => void;
+
+  /** Live voice (Gemini): send one push-to-talk utterance; replies stream via onVoiceEvent. */
+  voiceTurn(pcm16: ArrayBuffer, sampleRate: number): Promise<void>;
+  voiceText(text: string): Promise<void>;
+  onVoiceEvent(cb: (e: VoiceEvent) => void): () => void;
+  onAppEvent(cb: (e: AppEvent) => void): () => void;
+  pendingAction(): Promise<PendingAction | null>;
+  confirmAction(id: string): Promise<void>;
+  cancelAction(id: string): Promise<void>;
+  requestRefine(versionId: string): Promise<void>;
+  meshyBalance(): Promise<{ balance: number } | { error: string }>;
+  testGemini(): Promise<{ ok: boolean; message: string }>;
+
+  networkStatus(): Promise<NetworkStatus>;
+  wifiScan(): Promise<WifiNetwork[]>;
+  wifiConnect(ssid: string, password: string | null): Promise<{ ok: boolean; message: string }>;
+  wifiForget(ssid: string): Promise<{ ok: boolean; message: string }>;
 }
 
 export const IPC = {
@@ -140,6 +216,20 @@ export const IPC = {
   printerStatus: "printer:status",
   printerInfo: "printer:info",
   printerStatusEvent: "events:printer",
+  voiceTurn: "voice:turn",
+  voiceText: "voice:text",
+  voiceEvent: "events:voice",
+  appEvent: "events:app",
+  pendingAction: "actions:pending",
+  confirmAction: "actions:confirm",
+  cancelAction: "actions:cancel",
+  requestRefine: "actions:refine",
+  meshyBalance: "meshy:balance",
+  testGemini: "gemini:test",
+  networkStatus: "network:status",
+  wifiScan: "network:scan",
+  wifiConnect: "network:connect",
+  wifiForget: "network:forget",
 } as const;
 
 /** QD330 build volume as reported by the printer (M115: X 220, Y 220, Z 220). */

@@ -1,18 +1,22 @@
-// Morphix — Electron main process (Phase 1: local foundation).
+// Morphix — Electron main process (Phase 1 foundation + Phase 2 Gemini/Meshy).
 import { app, BrowserWindow, ipcMain, session, type IpcMainInvokeEvent } from "electron";
-import { createHash, randomUUID } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import { createReadStream, existsSync, readFileSync, statSync } from "node:fs";
 import { createServer, type Server } from "node:http";
 import { dirname, extname, join, resolve, sep } from "node:path";
 import { arch, platform } from "node:os";
 
-import { IPC, type AppSettings, type AssistantTurn, type GenerationProgress, type ModelVersion, type PrinterStatus, type Project } from "@morphix/shared";
-import { transition, type WorkflowState } from "@morphix/domain";
+import { IPC, type AppEvent, type AppSettings, type AssistantTurn, type PrinterStatus } from "@morphix/shared";
 import { Logger, Storage, safeId } from "@morphix/storage";
-import { MorphixDb, type Row } from "@morphix/database";
+import { MorphixDb } from "@morphix/database";
 import { PrinterObserver, TcpTransport } from "@morphix/printer";
-import { DemoGenerator, type ModelGenerator } from "@morphix/meshy";
-import { DemoAssistant, type Assistant } from "@morphix/gemini";
+import { DemoGenerator, MeshyClient, MeshyGenerator, MESHY_PREVIEW_CREDITS, MESHY_REFINE_CREDITS, type ModelGenerator } from "@morphix/meshy";
+import { DemoAssistant, DEFAULT_LIVE_MODEL } from "@morphix/gemini";
+import { NetworkManager } from "@morphix/network";
+import { type Ctx, latestVersion, moveProject, now, toProject, toVersion } from "./context";
+import { Generation, type FinishedInfo } from "./generation";
+import { Actions, PolicyError } from "./actions";
+import { VoiceController } from "./voice";
 
 const APP_DIR = resolve(__dirname, "..");
 const RENDERER_DIR = join(APP_DIR, "dist", "renderer");
@@ -27,16 +31,39 @@ storage.init();
 loadEnvFile(storage.path("config", "morphix.env"));
 const log = new Logger(storage);
 
-const PRINTER_HOST = process.env.MORPHIX_PRINTER_HOST || "192.168.10.51";
+const env = (k: string) => (process.env[k] ?? "").trim();
+const has = (k: string) => env(k).length > 0;
+const PRINTER_HOST = env("MORPHIX_PRINTER_HOST") || "192.168.10.51";
 const CAMERA_BASE = `http://${PRINTER_HOST}:8080`;
-const POLL_SECONDS = Number(process.env.MORPHIX_PRINTER_POLL_SECONDS || 5);
+const POLL_SECONDS = Number(env("MORPHIX_PRINTER_POLL_SECONDS") || 5);
+const GEMINI_MODEL = env("MORPHIX_GEMINI_MODEL") || DEFAULT_LIVE_MODEL;
+const MESHY_MODEL = env("MORPHIX_MESHY_MODEL") || "meshy-6";
+const DAILY_LIMIT = Number(env("MORPHIX_MESHY_DAILY_LIMIT") || 15);
 
-let db: MorphixDb;
 let win: BrowserWindow | null = null;
 let origin = "";
-const generator: ModelGenerator = new DemoGenerator();
-const assistant: Assistant = new DemoAssistant();
+const meshy = has("MESHY_API_KEY") ? new MeshyClient(env("MESHY_API_KEY"), MESHY_MODEL) : null;
+const generator: ModelGenerator = meshy ? new MeshyGenerator(meshy) : new DemoGenerator();
+const demoAssistant = new DemoAssistant();
+const network = new NetworkManager();
 const printer = new PrinterObserver(new TcpTransport(PRINTER_HOST), onPrinterStatus);
+
+const ctx: Ctx = {
+  db: null as unknown as MorphixDb, // set in whenReady
+  storage,
+  log,
+  send,
+  event: (e: AppEvent) => send(IPC.appEvent, e),
+  url: (rel) => (rel ? `${origin}/library/${rel}` : null),
+  currentProjectId: null,
+};
+const generation = new Generation(ctx, () => generator, onGenerationFinished);
+const actions = new Actions(ctx, generation, { usingMeshy: () => meshy !== null, meshyModel: MESHY_MODEL, dailyLimit: DAILY_LIMIT });
+const voice = new VoiceController(ctx, actions, {
+  apiKey: has("GEMINI_API_KEY") ? env("GEMINI_API_KEY") : undefined,
+  model: GEMINI_MODEL,
+  meshyBalance: async () => (meshy ? (await meshy.balance()).balance : null),
+});
 
 process.on("uncaughtException", (e) => log.write("error", "uncaughtException", { message: e.message, stack: e.stack }));
 process.on("unhandledRejection", (e) => log.write("error", "unhandledRejection", { reason: String(e) }));
@@ -45,25 +72,32 @@ process.on("unhandledRejection", (e) => log.write("error", "unhandledRejection",
 function loadEnvFile(file: string): void {
   if (!existsSync(file)) return;
   for (const line of readFileSync(file, "utf8").split("\n")) {
-    const m = /^\s*([A-Z0-9_]+)\s*=\s*(.*?)\s*$/.exec(line);
+    const m = /^\s*(?:export\s+)?([A-Z0-9_]+)\s*=\s*(.*?)\s*$/.exec(line);
     if (m && !line.trim().startsWith("#") && process.env[m[1]] === undefined) {
       process.env[m[1]] = m[2].replace(/^["']|["']$/g, "");
     }
   }
 }
 
-const has = (k: string) => Boolean(process.env[k] && process.env[k]!.trim());
-const now = () => new Date().toISOString();
-const libraryUrl = (rel: string | null | undefined) => (rel ? `${origin}/library/${rel}` : null);
-
 function settings(): AppSettings {
+  const gemini = voice.enabled;
   return {
     storageRoot: storage.root,
+    ai: {
+      assistant: gemini ? "gemini-live" : "demo",
+      geminiModel: GEMINI_MODEL,
+      generator: meshy ? "meshy" : "demo",
+      meshyModel: MESHY_MODEL,
+      previewCredits: meshy ? (MESHY_PREVIEW_CREDITS[MESHY_MODEL] ?? 20) : 0,
+      refineCredits: meshy ? MESHY_REFINE_CREDITS : 0,
+      dailyLimit: DAILY_LIMIT,
+      usedToday: ctx.db ? ctx.db.meshyTasksToday() : 0,
+    },
     printerHost: PRINTER_HOST,
     cameraStreamUrl: `${CAMERA_BASE}/?action=stream`,
     cameraSnapshotUrl: `${CAMERA_BASE}/?action=snapshot`,
     printerPollSeconds: POLL_SECONDS,
-    demoMode: true,
+    demoMode: !gemini || !meshy,
     keys: {
       gemini: has("GEMINI_API_KEY"),
       meshy: has("MESHY_API_KEY"),
@@ -76,96 +110,31 @@ function settings(): AppSettings {
   };
 }
 
-function toProject(r: Row): Project {
-  const thumb = r.latest_version_id
-    ? db.get("SELECT thumbnail_rel_path FROM model_versions WHERE id = ?", [r.latest_version_id])
-    : undefined;
-  return {
-    id: String(r.id),
-    title: String(r.title),
-    prompt: String(r.prompt),
-    state: r.state as WorkflowState,
-    createdAt: String(r.created_at),
-    updatedAt: String(r.updated_at),
-    latestVersionId: r.latest_version_id ? String(r.latest_version_id) : null,
-    thumbnailUrl: libraryUrl(thumb?.thumbnail_rel_path as string | undefined),
-  };
-}
-
-function toVersion(r: Row): ModelVersion {
-  return {
-    id: String(r.id),
-    projectId: String(r.project_id),
-    version: Number(r.version),
-    source: r.source as ModelVersion["source"],
-    format: r.format as ModelVersion["format"],
-    url: libraryUrl(String(r.rel_path))!,
-    bytes: Number(r.bytes),
-    targetHeightMm: r.target_height_mm == null ? null : Number(r.target_height_mm),
-    createdAt: String(r.created_at),
-  };
-}
-
-function setProjectState(id: string, to: WorkflowState): void {
-  const r = db.get("SELECT state FROM projects WHERE id = ?", [id]);
-  if (!r) throw new Error("project not found");
-  const next = transition(r.state as WorkflowState, to, { printControlsEnabled: false });
-  db.run("UPDATE projects SET state = ?, updated_at = ? WHERE id = ?", [next, now(), id]);
-}
-
 function send(channel: string, payload: unknown): void {
   if (win && !win.isDestroyed()) win.webContents.send(channel, payload);
 }
 
 function onPrinterStatus(s: PrinterStatus, prev: PrinterStatus): void {
   send(IPC.printerStatusEvent, s);
-  if (!db) return;
+  if (!ctx.db) return;
   if (s.online !== prev.online || s.machine !== prev.machine) {
     const kind = s.online ? `status:${s.machine ?? "unknown"}` : "offline";
-    db.run("INSERT INTO printer_events(at, kind, detail) VALUES (?, ?, ?)", [now(), kind, s.error ?? s.currentFile ?? null]);
+    ctx.db.run("INSERT INTO printer_events(at, kind, detail) VALUES (?, ?, ?)", [now(), kind, s.error ?? s.currentFile ?? null]);
     log.write("info", `printer ${kind}`, s.error ? { error: s.error } : undefined);
   }
 }
 
-// ---------------------------------------------------------------------------
-// Generation workflow (demo adapter in Phase 1)
-
-async function runGeneration(projectId: string, taskId: string, prompt: string): Promise<void> {
-  const report = (p: Omit<GenerationProgress, "taskId" | "projectId">) =>
-    send(IPC.generationProgress, { taskId, projectId, ...p } satisfies GenerationProgress);
-  try {
-    const model = await generator.generate(prompt, (u) => {
-      db.run("UPDATE generation_tasks SET status = ?, progress = ?, updated_at = ? WHERE id = ?", [u.status, u.progress, now(), taskId]);
-      if (u.status !== "succeeded") report(u);
-    });
-    const versionId = randomUUID();
-    const n = Number(db.get("SELECT COUNT(*) AS n FROM model_versions WHERE project_id = ?", [projectId])?.n ?? 0) + 1;
-    const file = join(storage.modelDir(projectId, versionId), `model.${model.format}`);
-    storage.writeAtomic(file, model.data);
-    const rel = storage.relative(file);
-    db.run(
-      "INSERT INTO model_versions(id, project_id, version, source, format, rel_path, bytes, created_at) VALUES (?,?,?,?,?,?,?,?)",
-      [versionId, projectId, n, generator.name, model.format, rel, model.data.length, now()],
+function onGenerationFinished(info: FinishedInfo): void {
+  if (info.ok) {
+    ctx.currentProjectId = info.projectId;
+    ctx.event({ type: "navigate", page: "viewer", projectId: info.projectId });
+    void voice.notify(
+      info.kind === "refine"
+        ? `The coloured version of "${info.title}" is ready on screen.`
+        : `The model "${info.title}" finished generating and is on screen now. Tell the user and ask how tall they want it.`,
     );
-    db.run("INSERT INTO assets(id, version_id, kind, rel_path, bytes, sha256, created_at) VALUES (?,?,?,?,?,?,?)", [
-      randomUUID(), versionId, model.format, rel, model.data.length, createHash("sha256").update(model.data).digest("hex"), now(),
-    ]);
-    db.run("UPDATE projects SET latest_version_id = ?, updated_at = ? WHERE id = ?", [versionId, now(), projectId]);
-    db.run("UPDATE generation_tasks SET status = 'succeeded', progress = 100, updated_at = ? WHERE id = ?", [now(), taskId]);
-    setProjectState(projectId, "reviewing");
-    db.flush();
-    log.write("info", "model generated", { projectId, versionId, bytes: model.data.length, source: generator.name });
-    report({ status: "succeeded", progress: 100, stage: "Model ready", versionId });
-  } catch (e) {
-    const msg = (e as Error).message;
-    db.run("UPDATE generation_tasks SET status = 'failed', error = ?, updated_at = ? WHERE id = ?", [msg, now(), taskId]);
-    try {
-      setProjectState(projectId, "failed");
-    } catch {
-      /* already failed */
-    }
-    log.write("error", "generation failed", { projectId, error: msg });
-    report({ status: "failed", progress: 0, stage: "Failed", error: msg });
+  } else {
+    void voice.notify(`Generating "${info.title}" failed: ${info.error}. Apologise briefly and offer to try again.`);
   }
 }
 
@@ -175,8 +144,8 @@ function wav(pcm16: Buffer, sampleRate: number): Buffer {
   h.writeUInt32LE(36 + pcm16.length, 4);
   h.write("WAVEfmt ", 8);
   h.writeUInt32LE(16, 16);
-  h.writeUInt16LE(1, 20); // PCM
-  h.writeUInt16LE(1, 22); // mono
+  h.writeUInt16LE(1, 20);
+  h.writeUInt16LE(1, 22);
   h.writeUInt32LE(sampleRate, 24);
   h.writeUInt32LE(sampleRate * 2, 28);
   h.writeUInt16LE(2, 32);
@@ -186,13 +155,22 @@ function wav(pcm16: Buffer, sampleRate: number): Buffer {
   return Buffer.concat([h, pcm16]);
 }
 
+function saveRecording(pcm: Buffer, rate: number): string {
+  if (pcm.length > 16000 * 2 * 120) throw new Error("recording too long (2 minute limit)");
+  const file = storage.path("cache", "recordings", `${randomUUID()}.wav`);
+  storage.writeAtomic(file, wav(pcm, rate));
+  return storage.relative(file);
+}
+
 function addTurn(role: "user" | "assistant", text: string, audioRel?: string): AssistantTurn {
   const turn = { id: randomUUID(), role, text, createdAt: now() };
-  db.run("INSERT INTO conversation(id, role, text, audio_rel_path, created_at) VALUES (?,?,?,?,?)", [
+  ctx.db.run("INSERT INTO conversation(id, role, text, audio_rel_path, created_at) VALUES (?,?,?,?,?)", [
     turn.id, role, text, audioRel ?? null, turn.createdAt,
   ]);
-  return { ...turn, audioUrl: libraryUrl(audioRel) ?? undefined };
+  return { ...turn, audioUrl: ctx.url(audioRel) ?? undefined };
 }
+
+const friendly = (e: unknown) => (e instanceof PolicyError ? e.message : (e as Error).message);
 
 // ---------------------------------------------------------------------------
 // IPC — every handler checks the sender is our own window.
@@ -207,6 +185,7 @@ function handle<A extends unknown[], R>(channel: string, fn: (...args: A) => R |
 }
 
 function registerIpc(): void {
+  const { db } = ctx;
   handle(IPC.getSettings, () => settings());
   handle(IPC.getSystemInfo, () => ({
     version: app.getVersion(),
@@ -222,31 +201,26 @@ function registerIpc(): void {
     if (event.senderFrame?.url.startsWith(origin + "/")) log.write(level, `[renderer] ${String(message).slice(0, 2000)}`);
   });
 
-  handle(IPC.listProjects, () => db.all("SELECT * FROM projects ORDER BY updated_at DESC").map(toProject));
+  handle(IPC.listProjects, () => db.all("SELECT * FROM projects ORDER BY updated_at DESC").map((r) => toProject(ctx, r)));
   handle(IPC.getProject, (id: string) => {
     const r = db.get("SELECT * FROM projects WHERE id = ?", [safeId(id)]);
     if (!r) return null;
+    ctx.currentProjectId = id;
     return {
-      project: toProject(r),
-      versions: db.all("SELECT * FROM model_versions WHERE project_id = ? ORDER BY version DESC", [id]).map(toVersion),
+      project: toProject(ctx, r),
+      versions: db.all("SELECT * FROM model_versions WHERE project_id = ? ORDER BY version DESC", [id]).map((v) => toVersion(ctx, v)),
     };
   });
   handle(IPC.createProjectFromPrompt, (prompt: string) => {
     const text = String(prompt ?? "").trim().slice(0, 500);
     if (!text) throw new Error("describe what to make first");
-    const id = randomUUID();
-    const taskId = randomUUID();
-    const t = now();
-    db.run("INSERT INTO projects(id, title, prompt, state, created_at, updated_at) VALUES (?,?,?,?,?,?)", [
-      id, text.slice(0, 60), text, "idea", t, t,
-    ]);
-    setProjectState(id, "generating");
-    db.run(
-      "INSERT INTO generation_tasks(id, project_id, provider, kind, status, prompt, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?)",
-      [taskId, id, generator.name, "preview", "queued", text, t, t],
-    );
-    void runGeneration(id, taskId, text);
-    return { project: toProject(db.get("SELECT * FROM projects WHERE id = ?", [id])!), taskId };
+    try {
+      if (meshy) return { pending: actions.proposeGenerate(text, text.slice(0, 60)) };
+      const { projectId, taskId } = generation.start({ prompt: text, title: text.slice(0, 60), kind: "preview" });
+      return { project: toProject(ctx, db.get("SELECT * FROM projects WHERE id = ?", [projectId])!), taskId };
+    } catch (e) {
+      throw new Error(friendly(e));
+    }
   });
   handle(IPC.setTargetHeight, (versionId: string, heightMm: number) => {
     const h = Number(heightMm);
@@ -254,33 +228,37 @@ function registerIpc(): void {
     db.run("UPDATE model_versions SET target_height_mm = ? WHERE id = ?", [h, safeId(versionId)]);
     const r = db.get("SELECT * FROM model_versions WHERE id = ?", [versionId]);
     if (!r) throw new Error("model not found");
-    return toVersion(r);
+    try {
+      moveProject(ctx, String(r.project_id), "sizing");
+    } catch {
+      /* keep state */
+    }
+    return toVersion(ctx, r);
   });
   handle(IPC.saveThumbnail, (versionId: string, dataUrl: string) => {
     const m = /^data:image\/png;base64,([A-Za-z0-9+/=]+)$/.exec(String(dataUrl));
     if (!m) throw new Error("expected a PNG data URL");
     const png = Buffer.from(m[1], "base64");
     if (png.length > 5_000_000) throw new Error("thumbnail too large");
-    const file = storage.path("previews", `${safeId(versionId)}.png`);
+    const existing = db.get("SELECT thumbnail_rel_path FROM model_versions WHERE id = ?", [safeId(versionId)]);
+    if (existing?.thumbnail_rel_path) return; // keep Meshy's own thumbnail
+    const file = storage.path("previews", `${versionId}.png`);
     storage.writeAtomic(file, png);
     db.run("UPDATE model_versions SET thumbnail_rel_path = ? WHERE id = ?", [storage.relative(file), versionId]);
   });
 
+  // Demo assistant (no Gemini key)
   handle(IPC.submitRecording, async (pcm: ArrayBuffer, sampleRate: number) => {
     const buf = Buffer.from(pcm);
-    if (buf.length > 16000 * 2 * 120) throw new Error("recording too long (2 minute limit)");
     const rate = Math.round(Number(sampleRate)) || 16000;
-    const file = storage.path("cache", "recordings", `${randomUUID()}.wav`);
-    storage.writeAtomic(file, wav(buf, rate));
-    const { transcript, reply } = await assistant.hearAudio(buf, rate);
-    const turn = addTurn("user", transcript, storage.relative(file));
-    return { turn, reply: addTurn("assistant", reply.text), proposedPrompt: reply.proposedPrompt };
+    const rel = saveRecording(buf, rate);
+    const { transcript, reply } = await demoAssistant.hearAudio(buf, rate);
+    return { turn: addTurn("user", transcript, rel), reply: addTurn("assistant", reply.text), proposedPrompt: reply.proposedPrompt };
   });
   handle(IPC.sendText, async (text: string) => {
     const t = String(text ?? "").slice(0, 500);
-    const turn = addTurn("user", t);
-    const reply = await assistant.hearText(t);
-    return { turn, reply: addTurn("assistant", reply.text), proposedPrompt: reply.proposedPrompt };
+    const reply = await demoAssistant.hearText(t);
+    return { turn: addTurn("user", t), reply: addTurn("assistant", reply.text), proposedPrompt: reply.proposedPrompt };
   });
   handle(IPC.conversation, () =>
     db
@@ -290,13 +268,85 @@ function registerIpc(): void {
         id: String(r.id),
         role: r.role as "user" | "assistant",
         text: String(r.text),
-        audioUrl: libraryUrl(r.audio_rel_path as string | null) ?? undefined,
+        audioUrl: ctx.url(r.audio_rel_path as string | null) ?? undefined,
         createdAt: String(r.created_at),
       })),
   );
 
+  // Gemini Live voice
+  handle(IPC.voiceTurn, async (pcm: ArrayBuffer, sampleRate: number) => {
+    const buf = Buffer.from(pcm);
+    if (Math.round(Number(sampleRate)) !== 16000) throw new Error("voice input must be 16 kHz");
+    const rel = saveRecording(buf, 16000);
+    try {
+      await voice.utterance(buf, rel);
+    } catch (e) {
+      send(IPC.voiceEvent, { type: "error", message: friendly(e) });
+      send(IPC.voiceEvent, { type: "status", state: "offline" });
+    }
+  });
+  handle(IPC.voiceText, async (text: string) => {
+    try {
+      await voice.text(String(text ?? ""));
+    } catch (e) {
+      send(IPC.voiceEvent, { type: "error", message: friendly(e) });
+    }
+  });
+  handle(IPC.pendingAction, () => actions.current);
+  handle(IPC.confirmAction, (id: string) => {
+    try {
+      const r = actions.confirm(String(id), "touch");
+      void voice.notify(`The user tapped Confirm. Generating "${r.action.title}" has started (${r.action.credits} credits). It takes about one to three minutes.`);
+    } catch (e) {
+      throw new Error(friendly(e));
+    }
+  });
+  handle(IPC.cancelAction, (id: string) => {
+    if (actions.current?.id === id) {
+      actions.clear();
+      void voice.notify("The user tapped Cancel on the pending action.");
+    }
+  });
+  handle(IPC.requestRefine, (versionId: string) => {
+    try {
+      actions.proposeRefine(safeId(String(versionId)));
+    } catch (e) {
+      throw new Error(friendly(e));
+    }
+  });
+  handle(IPC.meshyBalance, async () => {
+    if (!meshy) return { error: "Meshy is not configured" };
+    try {
+      return { balance: (await meshy.balance()).balance };
+    } catch (e) {
+      return { error: (e as Error).message };
+    }
+  });
+  handle(IPC.testGemini, () => voice.test());
+
   handle(IPC.printerStatus, () => printer.status);
   handle(IPC.printerInfo, () => printer.info());
+
+  // Network (Wi-Fi only; the printer's Ethernet link is read-only)
+  handle(IPC.networkStatus, () => network.status());
+  handle(IPC.wifiScan, () => network.scan());
+  handle(IPC.wifiConnect, async (ssid: string, password: string | null) => {
+    try {
+      const message = await network.connect(String(ssid), password === null ? null : String(password));
+      log.write("info", "wifi connected", { ssid });
+      return { ok: true, message };
+    } catch (e) {
+      log.write("warn", "wifi connect failed", { ssid, error: (e as Error).message });
+      return { ok: false, message: (e as Error).message };
+    }
+  });
+  handle(IPC.wifiForget, async (ssid: string) => {
+    try {
+      return { ok: true, message: await network.forget(String(ssid)) };
+    } catch (e) {
+      return { ok: false, message: (e as Error).message };
+    }
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -389,7 +439,9 @@ function createWindow(): void {
         const r = await m.sendText("a small vase");
         const done = new Promise((res) => { const off = m.onGenerationProgress((p) => {
           if (p.status === "succeeded" || p.status === "failed") { off(); res(p); } }); });
-        const { project } = await m.createProjectFromPrompt(r.proposedPrompt);
+        const created = await m.createProjectFromPrompt(r.proposedPrompt);
+        if (created.pending) { await m.cancelAction(created.pending.id); return { pendingCredits: created.pending.credits, cancelled: true }; }
+        const { project } = created;
         const p = await done;
         const d = await m.getProject(project.id);
         const v = d.versions[0];
@@ -400,7 +452,22 @@ function createWindow(): void {
         try { blocked = (await fetch(probe)).status === 404; } catch { blocked = true; }
         return { status: p.status, state: d.project.state, bytes, fileBytes: v.bytes, height: sized.targetHeightMm, blocked, projects: (await m.listProjects()).length };
       })()`);
-      log.write("info", "smoke test", { ok: /Morphix/.test(text), chars: text.length, flow });
+      let live: unknown = "skipped";
+      if (process.env.MORPHIX_SMOKE_LIVE === "1") {
+        // Live check: Gemini should PROPOSE a model (pending action) — then we cancel. No credits spent.
+        live = await win!.webContents.executeJavaScript(`(async () => {
+          const m = window.morphix; const seen = [];
+          const offV = m.onVoiceEvent((e) => { if (e.type !== "audio") seen.push(e.type === "turn-complete" ? "turn:" + (e.assistant && e.assistant.text) : e.type + (e.state ? ":" + e.state : "")); });
+          const pending = new Promise((res) => { const off = m.onAppEvent((e) => { if (e.type === "pending" && e.action) { off(); res(e.action); } }); setTimeout(() => res(null), 30000); });
+          await m.voiceText("Please make me a small dragon figurine about the size of my palm.");
+          const action = await pending;
+          if (action) await m.cancelAction(action.id);
+          await new Promise((r) => setTimeout(r, 6000));
+          offV();
+          return { proposed: action ? { title: action.title, credits: action.credits, prompt: action.prompt.slice(0, 160) } : null, events: seen.slice(-8) };
+        })()`);
+      }
+      log.write("info", "smoke test", { ok: /Morphix/.test(text), chars: text.length, flow, live });
       app.quit();
     });
   }
@@ -421,18 +488,21 @@ app.on("second-instance", () => {
 
 app.whenReady().then(async () => {
   const wasmDir = dirname(require.resolve("sql.js/dist/sql-wasm.wasm"));
-  db = await MorphixDb.open(storage, wasmDir);
-  const recovered = db.recoverInterruptedTasks();
-  db.backup();
-  setInterval(() => db.backup(), 24 * 3600 * 1000);
-  log.write("info", "Morphix starting", { storage: storage.root, printer: PRINTER_HOST, recovered, demo: true });
+  ctx.db = await MorphixDb.open(storage, wasmDir);
+  const resumable = ctx.db.recoverInterruptedTasks();
+  ctx.db.backup();
+  setInterval(() => ctx.db.backup(), 24 * 3600 * 1000);
+  log.write("info", "Morphix starting", {
+    storage: storage.root, printer: PRINTER_HOST, assistant: voice.enabled ? GEMINI_MODEL : "demo",
+    generator: meshy ? MESHY_MODEL : "demo", resumable: resumable.length,
+  });
 
   const server = await startServer();
   const addr = server.address();
   origin = `http://127.0.0.1:${typeof addr === "object" && addr ? addr.port : 0}`;
 
   // Microphone only, only for our own page. Everything else is denied.
-  session.defaultSession.setPermissionRequestHandler((wc, permission, cb, details) => {
+  session.defaultSession.setPermissionRequestHandler((_wc, permission, cb, details) => {
     const ok =
       permission === "media" &&
       details.requestingUrl.startsWith(origin + "/") &&
@@ -446,13 +516,18 @@ app.whenReady().then(async () => {
   registerIpc();
   createWindow();
   printer.start(POLL_SECONDS * 1000);
+  if (resumable.length && meshy) generation.resume(resumable);
+  const latest = ctx.db.get("SELECT id FROM projects ORDER BY updated_at DESC LIMIT 1");
+  ctx.currentProjectId = latest ? String(latest.id) : null;
+  void latestVersion; // (used by modules)
 });
 
 app.on("window-all-closed", () => app.quit());
 app.on("before-quit", () => {
   printer.stop();
+  voice.close();
   try {
-    db?.close();
+    ctx.db?.close();
   } catch (e) {
     log.write("error", "db close failed", { error: (e as Error).message });
   }
