@@ -1,8 +1,9 @@
 // QD330 adapter — OBSERVATION ONLY (Phase 1).
 // Talks to TCP 8899 ("~CMD\r\n" ... "ok"). Only the read-only commands in
 // READ_ONLY_COMMANDS can be sent; everything else is rejected before it reaches
-// the socket. Phase 5 job control (upload/start/pause/resume/cancel) lives in
-// control.ts behind QD330Controller, which is disabled by default.
+// the socket. Phase 5 job and machine control (upload/start/pause/resume/cancel,
+// home/light/fan/temperatures/motors/emergency stop) lives in control.ts behind
+// QD330Controller, which is disabled by default.
 import { Socket } from "node:net";
 import type { PrinterInfo, PrinterStatus } from "@morphix/shared";
 import { assertReadOnly, cleanReply, parseInfo, parseStatus } from "./protocol";
@@ -105,10 +106,11 @@ export class PrinterObserver {
   }
 }
 
-// Phase 5: printer control (disabled by default), approval tokens, job tracking, fake printer.
+// Phase 5: printer control (disabled by default), machine controls, approval tokens, job tracking, fake printer.
 export * from "./protocol";
 export * from "./names";
 export * from "./auth";
 export * from "./control";
+export * from "./machine";
 export * from "./tracker";
 export * from "./fake-server";
