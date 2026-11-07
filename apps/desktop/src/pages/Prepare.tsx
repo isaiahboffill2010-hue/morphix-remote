@@ -6,8 +6,8 @@ const LAYERS: [string, number][] = [["Draft 0.28", 0.28], ["Normal 0.20", 0.2], 
 const INFILL = [10, 15, 25, 50];
 const SUPPORTS: [string, PrepareSettings["supports"]][] = [["None", "none"], ["Auto", "auto"], ["Plate only", "buildplate"]];
 const STAGES: Record<string, string> = {
-  load: "Loading model", validate: "Checking the mesh", repair: "Repairing", place: "Orienting & placing",
-  slice: "Slicing (this can take a few minutes)", gx: "Building printer file", done: "Done",
+  load: "Opening your model 📦", validate: "Checking it for holes 🔍", repair: "Fixing little problems 🔧", place: "Finding the best way to stand it up 🧍",
+  slice: "Cutting it into layers 🍰 (this can take a few minutes)", gx: "Writing the printer file 📝", done: "All done! 🎉",
 };
 
 const duration = (s: number | null | undefined) => {
@@ -70,7 +70,7 @@ export function PreparePage({ projectId, onBack, onError }: Props) {
     <div className="prepare">
       <section className="card prep-settings">
         <div className="row" style={{ justifyContent: "space-between" }}>
-          <h3 style={{ margin: 0 }}>Print settings</h3>
+          <h3 style={{ margin: 0 }}>How should it print?</h3>
           <button className="btn ghost" style={{ minHeight: 40 }} onClick={onBack}>‹ Back</button>
         </div>
         <div className="muted small">{data.project.title} · v{v.version} · target height {v.targetHeightMm ? `${v.targetHeightMm.toFixed(0)} mm` : "original"}</div>
@@ -81,13 +81,13 @@ export function PreparePage({ projectId, onBack, onError }: Props) {
         <div className="field-label">Supports</div>
         <div className="seg">{SUPPORTS.map(([l, m]) => <button key={m} className={settings.supports === m ? "on" : ""} onClick={() => setSettings({ ...settings, supports: m })}>{l}</button>)}</div>
         <button className="btn primary" style={{ marginTop: "auto" }} disabled={busy} onClick={() => void run()}>
-          {busy ? STAGES[stage!] ?? "Working…" : summary ? "Prepare again" : "Prepare & slice"}
+          {busy ? STAGES[stage!] ?? "Working…" : summary ? "Try again 🔁" : "Get it ready ✨"}
         </button>
       </section>
 
       <section className="card prep-result">
-        <h3>Result</h3>
-        {!summary && !busy && <div className="muted">Choose settings and tap “Prepare &amp; slice”. Morphix repairs the mesh, scales it, picks a stable orientation and slices it for the QD330.</div>}
+        <h3>What I found</h3>
+        {!summary && !busy && <div className="muted">Tap “Get it ready” and I’ll check your model, fix small problems, stand it up the best way and cut it into layers for the printer.</div>}
         {busy && (
           <div>
             <div style={{ fontWeight: 600 }}>{STAGES[stage!] ?? stage}</div>
@@ -99,7 +99,7 @@ export function PreparePage({ projectId, onBack, onError }: Props) {
             {summary.error && <div className="bad-text">{summary.error}</div>}
             <div className="result-grid">
               <div className="stat-tile"><div className="k">Size</div><div className="v">{summary.size ? `${summary.size.x.toFixed(0)}×${summary.size.y.toFixed(0)}×${summary.size.z.toFixed(0)}` : "–"}<small> mm</small></div></div>
-              <div className="stat-tile"><div className="k">Fits QD330</div><div className="v" style={{ color: summary.fits ? "var(--ok)" : "var(--bad)" }}>{summary.fits === undefined ? "–" : summary.fits ? "Yes" : "No"}</div></div>
+              <div className="stat-tile"><div className="k">Fits?</div><div className="v" style={{ color: summary.fits ? "var(--ok)" : "var(--bad)" }}>{summary.fits === undefined ? "–" : summary.fits ? "Yes ✅" : "No ❌"}</div></div>
               <div className="stat-tile"><div className="k">Print time</div><div className="v">{duration(est?.printTimeS)}</div></div>
               <div className="stat-tile"><div className="k">Filament</div><div className="v">{est?.filamentG ? `${est.filamentG.toFixed(0)}` : "–"}<small> g</small></div></div>
             </div>
@@ -113,7 +113,7 @@ export function PreparePage({ projectId, onBack, onError }: Props) {
         )}
         <div className="row" style={{ marginTop: "auto", justifyContent: "space-between" }}>
           <span className="muted small" style={{ maxWidth: 360 }}>{summary && printLocked ? `🔒 ${printLocked}` : summary ? "You'll be asked to confirm before anything is sent." : ""}</span>
-          <button className="btn primary" disabled={!summary?.ok || Boolean(printLocked) || busy || Boolean(control?.job)} onClick={() => void print()}>Print…</button>
+          <button className="btn primary" disabled={!summary?.ok || Boolean(printLocked) || busy || Boolean(control?.job)} onClick={() => void print()}>Print it! 🖨️</button>
         </div>
       </section>
     </div>

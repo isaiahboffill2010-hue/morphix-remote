@@ -55,7 +55,7 @@ export function ModelViewer({ url, format, targetHeightMm, onMeasured, onError, 
     const camera = new THREE.PerspectiveCamera(40, 1, 1, 5000);
     camera.position.set(260, 220, 300);
 
-    scene.add(new THREE.HemisphereLight(0xdde6ff, 0x1a1f29, 1.4));
+    scene.add(new THREE.HemisphereLight(0xffffff, 0x9a8fc0, 1.5));
     const sun = new THREE.DirectionalLight(0xffffff, 1.6);
     sun.position.set(200, 400, 250);
     scene.add(sun);
@@ -63,16 +63,16 @@ export function ModelViewer({ url, format, targetHeightMm, onMeasured, onError, 
     // Build plate and build volume (QD330 as reported by firmware)
     const plate = new THREE.Mesh(
       new THREE.PlaneGeometry(VOL.x, VOL.y),
-      new THREE.MeshBasicMaterial({ color: 0x1b2433, transparent: true, opacity: 0.85 }),
+      new THREE.MeshBasicMaterial({ color: 0xece6ff, transparent: true, opacity: 0.95 }),
     );
     plate.rotation.x = -Math.PI / 2;
     scene.add(plate);
-    const grid = new THREE.GridHelper(VOL.x, 22, 0x3b4a66, 0x26314a);
+    const grid = new THREE.GridHelper(VOL.x, 22, 0xb7a8f0, 0xd6cdf7);
     grid.position.y = 0.05;
     scene.add(grid);
     const box = new THREE.LineSegments(
       new THREE.EdgesGeometry(new THREE.BoxGeometry(VOL.x, VOL.z, VOL.y)),
-      new THREE.LineBasicMaterial({ color: 0x5b8cff, transparent: true, opacity: 0.35 }),
+      new THREE.LineBasicMaterial({ color: 0x6c4cf0, transparent: true, opacity: 0.35 }),
     );
     box.position.y = VOL.z / 2;
     scene.add(box);
@@ -114,7 +114,7 @@ export function ModelViewer({ url, format, targetHeightMm, onMeasured, onError, 
     const s = state.current;
     if (!s) return;
     let cancelled = false;
-    const material = new THREE.MeshStandardMaterial({ color: 0x9db8ff, roughness: 0.55, metalness: 0.05, side: THREE.DoubleSide });
+    const material = new THREE.MeshStandardMaterial({ color: 0x8c6bff, roughness: 0.5, metalness: 0.05, side: THREE.DoubleSide });
 
     const place = (obj: THREE.Object3D) => {
       if (cancelled) return;

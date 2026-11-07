@@ -60,7 +60,7 @@ export function PrinterPage({ status, settings, onError }: { status: PrinterStat
       <aside className="side">
         {job && (
           <div className="card">
-            <h3>Printing</h3>
+            <h3>Printing now 🖨️</h3>
             <div className="row" style={{ justifyContent: "space-between" }}>
               <span className="small">{job.fileName}</span>
               <span style={{ fontWeight: 700 }}>{job.progress}%</span>
@@ -80,8 +80,8 @@ export function PrinterPage({ status, settings, onError }: { status: PrinterStat
         )}
         <div className="card">
           <div className="row" style={{ justifyContent: "space-between" }}>
-            <h3 style={{ margin: 0 }}>AI Guardian</h3>
-            <button className="btn" style={{ minHeight: 40 }} onClick={() => void g(guardian?.running ? "stop" : "start")}>{guardian?.running ? "Stop" : "Start watching"}</button>
+            <h3 style={{ margin: 0 }}>🛡️ Print Guardian</h3>
+            <button className="btn" style={{ minHeight: 40 }} onClick={() => void g(guardian?.running ? "stop" : "start")}>{guardian?.running ? "Stop" : "Watch my print"}</button>
           </div>
           <div className="muted small" style={{ margin: "6px 0" }}>
             {guardian ? `${guardian.label} · camera ${guardian.camera}${guardian.gemini ? " · Gemini checks on" : ""}` : "–"}

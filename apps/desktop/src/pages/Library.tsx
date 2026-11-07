@@ -4,7 +4,7 @@ import { api } from "../bridge";
 
 const STATE_LABEL: Partial<Record<Project["state"], string>> = {
   generating: "Generating…",
-  reviewing: "Ready to review",
+  reviewing: "Ready to look at",
   failed: "Failed",
   sizing: "Sizing",
 };
@@ -25,8 +25,8 @@ export function LibraryPage({ onOpen }: { onOpen: (id: string) => void }) {
     return (
       <div className="empty">
         <div>
-          <div style={{ fontSize: 20, fontWeight: 650 }}>No models yet</div>
-          <div className="muted">Models you create are saved on this Raspberry Pi.</div>
+          <div style={{ fontSize: 24, fontWeight: 900 }}>Nothing here yet 🌱</div>
+          <div className="muted">Go to Make and tell me what to create!</div>
         </div>
       </div>
     );
@@ -34,8 +34,8 @@ export function LibraryPage({ onOpen }: { onOpen: (id: string) => void }) {
   return (
     <div className="page">
       <div className="row" style={{ justifyContent: "space-between" }}>
-        <h2 style={{ margin: 0, fontSize: 20 }}>Model library</h2>
-        <span className="muted small">{projects.length} saved on this Pi</span>
+        <h2 className="hero-title">My Things 🧸</h2>
+        <span className="muted small">{projects.length} things made</span>
       </div>
       <div className="grid">
         {projects.map((p) => (

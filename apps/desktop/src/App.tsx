@@ -29,17 +29,12 @@ export interface Voice {
   setProposal: (p: string | null) => void;
 }
 
-const ICONS: Record<RailPage, ReactNode> = {
-  assistant: <path d="M12 3a3 3 0 0 0-3 3v6a3 3 0 0 0 6 0V6a3 3 0 0 0-3-3Zm-7 9a7 7 0 0 0 14 0M12 19v3" />,
-  library: <path d="M4 5h6v6H4zM14 5h6v6h-6zM4 15h6v4H4zM14 15h6v4h-6z" />,
-  viewer: <path d="M12 2 3 7v10l9 5 9-5V7l-9-5Zm0 0v20M3 7l9 5 9-5" />,
-  printer: <path d="M6 9V3h12v6M6 18H4v-7a2 2 0 0 1 2-2h12a2 2 0 0 1 2 2v7h-2M8 14h8v7H8z" />,
-  settings: <path d="M12 15a3 3 0 1 0 0-6 3 3 0 0 0 0 6Zm7.4-3a7.4 7.4 0 0 0-.1-1.2l2-1.6-2-3.4-2.4 1a7.6 7.6 0 0 0-2-1.2L14.5 3h-4l-.4 2.6a7.6 7.6 0 0 0-2 1.2l-2.4-1-2 3.4 2 1.6a7.4 7.4 0 0 0 0 2.4l-2 1.6 2 3.4 2.4-1c.6.5 1.3.9 2 1.2l.4 2.6h4l.4-2.6c.7-.3 1.4-.7 2-1.2l2.4 1 2-3.4-2-1.6c.1-.4.1-.8.1-1.2Z" />,
-};
-const LABELS: Record<RailPage, string> = { assistant: "Create", library: "Library", viewer: "Viewer", printer: "Printer", settings: "Settings" };
+type NavItem = Exclude<RailPage, "viewer">;
+const EMOJI: Record<NavItem, string> = { assistant: "🎤", library: "🧸", printer: "🖨️", settings: "⚙️" };
+const LABELS: Record<NavItem, string> = { assistant: "Make", library: "My Things", printer: "Printer", settings: "Grown-ups" };
 const STATE_TEXT: Record<VoiceState, string> = {
-  idle: "Hold to talk", ready: "Hold to talk", listening: "Listening… release to send", connecting: "Connecting to Gemini…",
-  thinking: "Thinking…", speaking: "Speaking… hold to interrupt", offline: "Hold to talk",
+  idle: "Hold the button and talk!", ready: "Hold the button and talk!", listening: "I'm listening… let go when you're done",
+  connecting: "Waking up…", thinking: "Hmm, let me think…", speaking: "Talking… (hold to interrupt)", offline: "Hold the button and talk!",
 };
 export const voiceLabel = (s: VoiceState) => STATE_TEXT[s];
 
@@ -92,6 +87,35 @@ export function MicButton({ voice, big = false }: { voice: Voice; big?: boolean 
       aria-label="Hold to talk"
     >
       <MicIcon />
+    </button>
+  );
+}
+
+/** Settings are for grown-ups: hold for 2 seconds to open. */
+function GrownUpButton({ active, onOpen }: { active: boolean; onOpen: () => void }) {
+  const [pct, setPct] = useState(0);
+  const timer = useRef<number | null>(null);
+  const stop = () => {
+    if (timer.current) window.clearInterval(timer.current);
+    timer.current = null;
+    setPct(0);
+  };
+  const start = () => {
+    if (active) return onOpen();
+    const t0 = Date.now();
+    timer.current = window.setInterval(() => {
+      const p = Math.min(100, ((Date.now() - t0) / 2000) * 100);
+      setPct(p);
+      if (p >= 100) {
+        stop();
+        onOpen();
+      }
+    }, 50);
+  };
+  return (
+    <button className={`hold ${active ? "active" : ""}`} style={{ ["--hold" as string]: `${pct}%`, marginTop: "auto" }} onPointerDown={start} onPointerUp={stop} onPointerLeave={stop} onPointerCancel={stop}>
+      <span className="emoji">{EMOJI.settings}</span>
+      {pct > 0 ? "Keep holding…" : LABELS.settings}
     </button>
   );
 }
@@ -243,12 +267,16 @@ export function App() {
         {page !== "assistant" && <MicButton voice={voice} />}
       </header>
       <nav className="rail">
-        {(Object.keys(LABELS) as RailPage[]).map((p) => (
-          <button key={p} className={page === p || (p === "viewer" && page === "prepare") ? "active" : ""} onClick={() => setPage(p)}>
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">{ICONS[p]}</svg>
-            {LABELS[p]}
-          </button>
-        ))}
+        {(Object.keys(LABELS) as NavItem[]).map((p) => {
+          const active = page === p || (p === "library" && (page === "viewer" || page === "prepare"));
+          if (p === "settings") return <GrownUpButton key={p} active={active} onOpen={() => setPage("settings")} />;
+          return (
+            <button key={p} className={active ? "active" : ""} onClick={() => setPage(p)}>
+              <span className="emoji">{EMOJI[p]}</span>
+              {LABELS[p]}
+            </button>
+          );
+        })}
       </nav>
       <main className="content">
         <PageBoundary page={page}>

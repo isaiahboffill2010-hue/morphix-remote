@@ -5,7 +5,7 @@ import { QD330_BUILD_VOLUME_MM } from "@morphix/shared";
 import { api } from "../bridge";
 import { ModelViewer, type ModelSize } from "../components/ModelViewer";
 
-const PRESETS: [string, number][] = [["2 in", 2 * MM_PER_INCH], ["4 in", 4 * MM_PER_INCH], ["6 in", 6 * MM_PER_INCH], ["50 mm", 50]];
+const PRESETS: [string, number][] = [["Tiny · 2 in", 2 * MM_PER_INCH], ["Small · 3 in", 3 * MM_PER_INCH], ["Medium · 4 in", 4 * MM_PER_INCH], ["Big · 6 in", 6 * MM_PER_INCH]];
 const KIND_LABEL: Record<ModelVersion["kind"], string> = { demo: "Demo", preview: "Shape", refine: "Colour" };
 
 interface Props {
@@ -104,7 +104,7 @@ export function ViewerPage({ projectId, settings, heightEvent, onBrowse, onPrepa
           <div className="muted small">v{v.version} · {v.source === "demo" ? "demo model" : `Meshy ${KIND_LABEL[v.kind].toLowerCase()}`} · {(v.bytes / 1e6).toFixed(1)} MB</div>
           {canRefine && (
             <button className="btn" style={{ width: "100%", marginTop: 8 }} onClick={() => api.requestRefine(v.id).catch((e) => onError((e as Error).message))}>
-              Add colour · {settings?.ai.refineCredits ?? 10} credits
+              🎨 Add colour · {settings?.ai.refineCredits ?? 10} credits
             </button>
           )}
         </div>
@@ -116,8 +116,8 @@ export function ViewerPage({ projectId, settings, heightEvent, onBrowse, onPrepa
               <div className="stat"><span className="muted">Depth</span><span>{fmt(size.scaled.y)}</span></div>
               <div className="stat"><span className="muted">Height</span><span>{fmt(size.scaled.z)} · {(size.scaled.z / MM_PER_INCH).toFixed(2)} in</span></div>
               <div className="stat">
-                <span className="muted">QD330 fit</span>
-                <span style={{ color: fits ? "var(--ok)" : "var(--bad)", fontWeight: 650 }}>{fits ? "Fits" : "Too large"}</span>
+                <span className="muted">Fits the printer?</span>
+                <span style={{ color: fits ? "var(--ok)" : "var(--bad)", fontWeight: 800 }}>{fits ? "Fits! ✅" : "Too big ❌"}</span>
               </div>
             </>
           ) : (
@@ -125,7 +125,7 @@ export function ViewerPage({ projectId, settings, heightEvent, onBrowse, onPrepa
           )}
         </div>
         <div className="card">
-          <h3>Target height</h3>
+          <h3>How big? 📏</h3>
           <div className="size-grid">
             {PRESETS.map(([label, mm]) => (
               <button key={label} className={`btn ${height && Math.abs(height - mm) < 0.5 ? "primary" : ""}`} onClick={() => void setTarget(mm)}>{label}</button>
@@ -136,9 +136,9 @@ export function ViewerPage({ projectId, settings, heightEvent, onBrowse, onPrepa
               <button className="btn ghost" style={{ gridColumn: "1 / -1" }} onClick={() => setTarget(null)}>Original size</button>
             )}
           </div>
-          <div className="muted small" style={{ marginTop: 6 }}>Or say “make it six inches tall”.</div>
+          <div className="muted small" style={{ marginTop: 6 }}>Or just say “make it six inches tall”.</div>
         </div>
-        <button className="btn primary" style={{ width: "100%", flex: "none" }} disabled={!fits} onClick={onPrepare}>Prepare to print ›</button>
+        <button className="btn primary" style={{ width: "100%", flex: "none" }} disabled={!fits} onClick={onPrepare}>Get it ready to print 🖨️</button>
       </aside>
     </div>
   );

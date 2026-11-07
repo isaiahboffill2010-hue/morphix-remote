@@ -4,7 +4,7 @@ import { api } from "../bridge";
 import { MicButton, voiceLabel, type Voice } from "../App";
 import { TextEntry } from "../components/Keyboard";
 
-const IDEAS = ["A cute dragon figurine", "A phone stand", "A tiny astronaut", "A desk organizer"];
+const IDEAS: [string, string][] = [["🐉", "a cute dragon"], ["📱", "a phone stand"], ["🚀", "a rocket ship"], ["🦖", "a dinosaur"]];
 
 interface Props {
   voice: Voice;
@@ -31,17 +31,15 @@ export function AssistantPage({ voice, settings, onOpenProject, onError }: Props
       <section className="card mic-panel">
         <MicButton voice={voice} big />
         <div style={{ fontWeight: 650, fontSize: 18 }}>{voiceLabel(voice.state)}</div>
-        <div className="muted small">
-          {voice.live ? `Gemini Live · ${settings?.ai.geminiModel}` : "Gemini not set up — add GEMINI_API_KEY on the Pi"}
-        </div>
-        {meshy && <div className="muted small">Meshy {settings?.ai.meshyModel} · {settings?.ai.previewCredits} credits per model</div>}
+        <div className="muted small">{voice.live ? "Tell me what to make — like “a dragon holding a shield”." : "A grown-up needs to add the Gemini key first."}</div>
+        {!meshy && <div className="muted small">The Meshy key is missing too.</div>}
       </section>
 
       <section className="card" style={{ display: "flex", flexDirection: "column", gap: 10, minHeight: 0 }}>
-        <h3>Conversation</h3>
+        <h2 className="hero-title">Let’s make something! ✨</h2>
         <div className="transcript" ref={listRef}>
           {voice.turns.length === 0 && !voice.userDraft && (
-            <div className="muted">Hold the microphone and say what you'd like to make — or tap an idea below.</div>
+            <div className="muted">Hold the big button and tell me what you want to make. Or tap an idea below!</div>
           )}
           {voice.turns.map((t) => (
             <div key={t.id} className={`bubble ${t.role}`}>
@@ -49,7 +47,7 @@ export function AssistantPage({ voice, settings, onOpenProject, onError }: Props
               {t.audioUrl && (
                 <div>
                   <button className="btn ghost" style={{ minHeight: 38, fontSize: 14 }} onClick={() => new Audio(t.audioUrl).play().catch((e) => onError(String(e)))}>
-                    ▶ Play recording
+                    ▶ Hear it
                   </button>
                 </div>
               )}
@@ -68,7 +66,7 @@ export function AssistantPage({ voice, settings, onOpenProject, onError }: Props
                   </div>
                   <div className="progress" style={{ marginTop: 8 }}><div style={{ width: `${gen.progress}%` }} /></div>
                   {gen.status === "succeeded" && (
-                    <button className="btn primary" style={{ marginTop: 10 }} onClick={() => onOpenProject(gen.projectId)}>Open in viewer</button>
+                    <button className="btn primary" style={{ marginTop: 10 }} onClick={() => onOpenProject(gen.projectId)}>Look at it! 👀</button>
                   )}
                   {gen.status === "failed" && <div style={{ color: "var(--bad)", marginTop: 8 }}>{gen.error}</div>}
                 </div>
@@ -77,17 +75,17 @@ export function AssistantPage({ voice, settings, onOpenProject, onError }: Props
           )}
         </div>
         <div className="chips">
-          <button className="btn" onClick={() => setTyping(true)}>⌨ Type an idea</button>
-          {IDEAS.map((idea) => (
-            <button key={idea} className="btn" disabled={Boolean(generating) || voice.state === "thinking"} onClick={() => void voice.sendText(`Make me ${idea.toLowerCase()}.`)}>
-              {idea}
+          <button className="btn" onClick={() => setTyping(true)}>⌨️ Type it</button>
+          {IDEAS.map(([emoji, idea]) => (
+            <button key={idea} className="btn" disabled={Boolean(generating) || voice.state === "thinking"} onClick={() => void voice.sendText(`Make me ${idea}.`)}>
+              {emoji} {idea.replace(/^an? /, "")}
             </button>
           ))}
         </div>
       </section>
       {typing && (
         <TextEntry
-          title="What should Morphix make?"
+          title="What should I make?"
           hint="e.g. a dragon figurine holding a shield"
           submitLabel="Send"
           onCancel={() => setTyping(false)}
