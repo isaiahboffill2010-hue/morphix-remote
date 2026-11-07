@@ -87,52 +87,35 @@ function Camera() {
   const [src, setSrc] = useState("");
   const [error, setError] = useState("");
   useEffect(() => {
-    let dead = false,
-      url = "",
-      controller = new AbortController();
-    (async () => {
+    let dead = false, url = "", loading = false;
+    const controller = new AbortController();
+    const load = async () => {
+      if (dead || loading) return;
+      loading = true;
       try {
-        const r = await fetch(`${API}/api/camera`, {
+        const r = await fetch(`${API}/api/camera/snapshot?t=${Date.now()}`, {
           headers: { Authorization: `Bearer ${token()}` },
           signal: controller.signal,
+          cache: "no-store",
         });
-        if (!r.ok || !r.body) throw new Error("Camera unavailable");
-        const rd = r.body.getReader();
-        let data = new Uint8Array();
-        while (!dead) {
-          const { value, done } = await rd.read();
-          if (done) break;
-          if (!value) continue;
-          const merged = new Uint8Array(data.length + value.length);
-          merged.set(data);
-          merged.set(value, data.length);
-          data = merged;
-          let start = -1,
-            end = -1;
-          for (let i = 0; i < data.length - 1; i++) {
-            if (start < 0 && data[i] === 0xff && data[i + 1] === 0xd8)
-              start = i;
-            if (start >= 0 && data[i] === 0xff && data[i + 1] === 0xd9) {
-              end = i + 2;
-              break;
-            }
-          }
-          if (start >= 0 && end > start) {
-            const blob = new Blob([data.slice(start, end)], {
-              type: "image/jpeg",
-            });
-            if (url) URL.revokeObjectURL(url);
-            url = URL.createObjectURL(blob);
-            setSrc(url);
-            data = data.slice(end);
-          } else if (data.length > 3_000_000) data = data.slice(-1_000_000);
-        }
+        if (!r.ok) throw new Error("Camera preview unavailable");
+        const next = URL.createObjectURL(await r.blob());
+        if (dead) { URL.revokeObjectURL(next); return; }
+        if (url) URL.revokeObjectURL(url);
+        url = next;
+        setSrc(next);
+        setError("");
       } catch (e) {
-        if (!dead) setError((e as Error).message);
+        if (!dead && !src) setError((e as Error).message);
+      } finally {
+        loading = false;
       }
-    })();
+    };
+    void load();
+    const interval = setInterval(() => void load(), 1_500);
     return () => {
       dead = true;
+      clearInterval(interval);
       controller.abort();
       if (url) URL.revokeObjectURL(url);
     };

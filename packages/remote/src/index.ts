@@ -154,6 +154,7 @@ export class MorphixRemote {
     if (req.method === "GET" && m) { const f = await this.d.backend.modelFile(cleanId(m[1]), USER); if (!f) { json(res, 404, { error: "not_found" }); return; } this.file(res, f.path, f.format === "glb" ? "model/gltf-binary" : "model/stl"); return; }
     m = /^\/api\/thumbnails\/([^/]+)$/.exec(u.pathname);
     if (req.method === "GET" && m) { const f = await this.d.backend.thumbnailFile?.(cleanId(m[1]), USER); if (!f) { json(res, 404, { error: "not_found" }); return; } this.file(res, f.path, `image/${f.format === "jpg" ? "jpeg" : f.format}`); return; }
+    if (req.method === "GET" && u.pathname === "/api/camera/snapshot") { await this.cameraSnapshot(res); return; }
     if (req.method === "GET" && u.pathname === "/api/camera") { const c = await this.d.backend.cameraStream(USER); if (!c) { json(res, 503, { error: "camera_unavailable" }); return; } res.writeHead(200, { "Content-Type": c.contentType, "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff" }); c.stream.pipe(res); req.once("close", () => c.stream.destroy()); return; }
     if (req.method === "GET" && u.pathname === "/api/conversation") { json(res, 200, { conversation: this.d.conversation() }); return; }
     if (req.method === "POST" && u.pathname === "/api/assistant/text") { const b = await this.input(req); const text = String(b.text ?? "").trim().slice(0, 1000); if (!text) throw new Error("message required"); await this.d.assistantText(text); json(res, 202, { ok: true }); return; }
@@ -177,6 +178,26 @@ export class MorphixRemote {
   private file(res: ServerResponse, path: string, contentType: string) {
     if (!existsSync(path)) { json(res, 404, { error: "not_found" }); return; }
     res.writeHead(200, { "Content-Type": contentType, "Cache-Control": "private, no-store", "X-Content-Type-Options": "nosniff" }); createReadStream(path).pipe(res);
+  }
+
+  private async cameraSnapshot(res: ServerResponse) {
+    const camera = await this.d.backend.cameraStream(USER);
+    if (!camera) { json(res, 503, { error: "camera_unavailable" }); return; }
+    let data = Buffer.alloc(0), frame: Buffer | null = null;
+    const timer = setTimeout(() => camera.stream.destroy(new Error("camera snapshot timeout")), 8_000);
+    try {
+      for await (const chunk of camera.stream) {
+        data = Buffer.concat([data, Buffer.from(chunk)]);
+        const start = data.indexOf(Buffer.from([0xff, 0xd8]));
+        const end = start >= 0 ? data.indexOf(Buffer.from([0xff, 0xd9]), start + 2) : -1;
+        if (start >= 0 && end > start) { frame = data.subarray(start, end + 2); break; }
+        if (data.length > 4_000_000) data = data.subarray(-1_000_000);
+      }
+    } catch { /* reported below */ }
+    finally { clearTimeout(timer); camera.stream.destroy(); }
+    if (!frame) { json(res, 503, { error: "camera_frame_unavailable" }); return; }
+    res.writeHead(200, { "Content-Type": "image/jpeg", "Content-Length": frame.length, "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff" });
+    res.end(frame);
   }
 
   private async pair(req: IncomingMessage, res: ServerResponse) {
