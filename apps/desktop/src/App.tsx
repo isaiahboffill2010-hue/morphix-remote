@@ -1,7 +1,7 @@
 import { Component, useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import type { AppSettings, AssistantTurn, PendingAction, PrinterStatus, VoiceEvent } from "@morphix/shared";
 import { api } from "./bridge";
-import { AudioOut, PushToTalk } from "./audio";
+import { AudioOut, PushToTalk, alertChime } from "./audio";
 import { installDragScroll } from "./dragScroll";
 import { useTheme } from "./theme";
 import { JobBar } from "./components/JobBar";
@@ -185,6 +185,10 @@ export function App() {
           case "interrupted":
             out.current.stop();
             break;
+          case "alert":
+            out.current.stop();
+            void alertChime();
+            break;
           case "turn-complete":
             setTurns((t) => [...t, ...[e.user, e.assistant].filter((x): x is AssistantTurn => Boolean(x))]);
             setUserDraft("");
@@ -197,7 +201,13 @@ export function App() {
         }
       }),
     ];
-    return () => offs.forEach((off) => off());
+    // A new/removed speaker (USB unplugged) leaves the old audio output dead: start fresh.
+    const onDevices = () => out.current.reset();
+    navigator.mediaDevices?.addEventListener?.("devicechange", onDevices);
+    return () => {
+      offs.forEach((off) => off());
+      navigator.mediaDevices?.removeEventListener?.("devicechange", onDevices);
+    };
   }, [showNotice]);
 
   const startTalk = useCallback(async () => {

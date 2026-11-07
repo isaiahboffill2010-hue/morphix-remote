@@ -63,3 +63,15 @@ export function scaledCheck(native: { x: number; y: number; z: number }, targetH
   const k = targetHeightMm && native.z > 0 ? targetHeightMm / native.z : 1;
   return checkBuildVolume({ x: native.x * k, y: native.y * k, z: native.z * k });
 }
+
+export type SizeDimension = "height" | "width" | "length" | "longest";
+
+/**
+ * Proportional resize: the target height (Z) that makes the chosen dimension `sizeMm`.
+ * Width = X, length = Y, height = Z (same axes as scaledCheck and the viewer).
+ */
+export function heightForDimension(native: { x: number; y: number; z: number }, dimension: SizeDimension, sizeMm: number): number {
+  const along = dimension === "width" ? native.x : dimension === "length" ? native.y : dimension === "longest" ? Math.max(native.x, native.y, native.z) : native.z;
+  if (!(along > 0) || !(native.z > 0)) return sizeMm;
+  return (sizeMm / along) * native.z;
+}

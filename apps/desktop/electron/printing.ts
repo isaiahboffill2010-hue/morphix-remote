@@ -5,7 +5,7 @@ import { randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, relative, resolve, sep } from "node:path";
-import type { GuardianView, MachineCapability, MachineCommand, PendingAction, PrepareSettings, PrepareSummary, PrintControlStatus, PrinterStatus } from "@morphix/shared";
+import type { GuardianView, GuardianVoiceView, MachineCapability, MachineCommand, PendingAction, PrepareSettings, PrepareSummary, PrintControlStatus, PrinterStatus } from "@morphix/shared";
 import { transition, type WorkflowState } from "@morphix/domain";
 import { advisorGeminiFromEnv, prepareWithAdvice, type PreparePrintResult } from "@morphix/slicing";
 import { preparePrint } from "@morphix/slicing";
@@ -60,6 +60,8 @@ export class Printing {
   private activeJobId: string | null = null;
   private printJobView: string | null = null;
   jobs: Jobs | null = null;
+  /** Spoken-warning state (set by main.ts once the voice is wired). */
+  voiceInfo: (() => GuardianVoiceView | null) | null = null;
 
   constructor(private ctx: Ctx, private o: PrintingOptions) {
     this.controller = new QD330Controller({
@@ -475,6 +477,7 @@ export class Printing {
       gemini: snap.gemini.available,
       autoPause: snap.autoPause,
       pauseAvailable: this.o.controlsEnabled,
+      voice: this.voiceInfo?.() ?? null,
     };
   }
 

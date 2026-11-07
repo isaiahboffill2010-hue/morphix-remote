@@ -99,6 +99,9 @@ function General({ settings, onError }: { settings: AppSettings | null; onError:
         <h3>Audio & printer</h3>
         <div className="row" style={{ marginBottom: 6 }}>
           <button className="btn" style={{ minHeight: 44 }} onClick={() => void speakerTest().catch((e) => onError(String(e)))}>Test speaker</button>
+          <button className="btn" style={{ minHeight: 44 }} onClick={() => void api.guardianSimulate().then((r) => (r.ok ? undefined : onError(r.message))).catch((e) => onError(String(e)))}>
+            Test the print warning
+          </button>
           <span className="muted small">Mic: hold the button, then ▶ Play recording.</span>
         </div>
         <div className="stat"><span className="muted">Printer</span><span>{settings?.printerHost} · every {settings?.printerPollSeconds}s</span></div>

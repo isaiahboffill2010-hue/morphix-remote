@@ -116,6 +116,8 @@ export function createMockApi(): MorphixApi {
     cancelPrint: async () => ({ ok: false, message: "preview" }),
     guardian: async () => ({ running: false, state: "idle", label: "Not monitoring", camera: "unknown", worker: "stopped", alert: null, gemini: false, autoPause: false, pauseAvailable: false }),
     guardianCommand: async () => ({ running: true, state: "monitoring", label: "Watching the print", camera: "ok", worker: "running", alert: null, gemini: false, autoPause: false, pauseAvailable: false }),
+    guardianAnswer: async () => ({ ok: false, message: "No print warning is waiting for an answer." }),
+    guardianSimulate: async () => ({ ok: true, message: "(mock) a test warning would be spoken now" }),
     networkStatus: async () => ({ hostname: "3dAImodel", wifi: { device: "wlan0", state: "connected", ssid: "hatsv2", ip: "192.168.86.38/24", signal: 72 }, ethernet: { device: "eth0", state: "connected", connection: "printer-lan", ip: "192.168.10.1/24" } }),
     wifiScan: async () => [
       { ssid: "hatsv2", signal: 72, security: "WPA2", inUse: true, saved: true },

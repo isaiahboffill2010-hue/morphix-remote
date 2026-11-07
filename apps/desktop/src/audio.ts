@@ -98,15 +98,52 @@ export async function speakerTest(): Promise<void> {
   await ctx.close();
 }
 
+/** Three rising beeps before a spoken Print Guardian warning. Never throws. */
+export async function alertChime(): Promise<void> {
+  let ctx: AudioContext | null = null;
+  try {
+    ctx = new AudioContext();
+    if (ctx.state === "suspended") await ctx.resume();
+    const t = ctx.currentTime;
+    for (const [freq, at] of [[784, 0], [988, 0.2], [1319, 0.4]] as const) {
+      const osc = ctx.createOscillator();
+      const g = ctx.createGain();
+      osc.type = "triangle";
+      osc.frequency.value = freq;
+      g.gain.setValueAtTime(0.0001, t + at);
+      g.gain.exponentialRampToValueAtTime(0.45, t + at + 0.02);
+      g.gain.exponentialRampToValueAtTime(0.0001, t + at + 0.18);
+      osc.connect(g).connect(ctx.destination);
+      osc.start(t + at);
+      osc.stop(t + at + 0.2);
+    }
+    await new Promise((r) => setTimeout(r, 700));
+  } catch {
+    /* no audio device: the alert is still on screen */
+  } finally {
+    void ctx?.close().catch(() => {});
+  }
+}
+
 /** Plays streamed 16-bit PCM (Gemini speaks at 24 kHz) gap-free through the speaker. */
 export class AudioOut {
   private ctx: AudioContext | null = null;
   private next = 0;
   private sources = new Set<AudioBufferSourceNode>();
 
+  /** Called when audio devices change (e.g. the USB speaker was unplugged/replugged). */
+  reset(): void {
+    this.stop();
+    const old = this.ctx;
+    this.ctx = null;
+    void old?.close().catch(() => {});
+  }
+
   play(pcm: ArrayBuffer, sampleRate: number): void {
+    if (this.ctx?.state === "closed") this.ctx = null;
     if (!this.ctx) this.ctx = new AudioContext();
     const ctx = this.ctx;
+    if (ctx.state === "suspended") void ctx.resume().catch(() => {});
     const ints = new Int16Array(pcm);
     if (!ints.length) return;
     const buf = ctx.createBuffer(1, ints.length, sampleRate);

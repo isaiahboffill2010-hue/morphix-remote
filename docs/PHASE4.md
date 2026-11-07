@@ -328,3 +328,20 @@ a hook, keep `autoPause: false` until the operator has signed it off.
 
 The heuristics have only been tested on synthetic images so far. Expect to
 retune them on the real camera.
+
+## Spoken warnings (apps/desktop/electron/guardian-voice.ts)
+
+When an alert reaches `confirmed_failure`, Morphix interrupts any speech, plays a chime and says
+the problem out loud, asking "Do you want me to stop the print? Say yes, stop it, or no, keep
+printing." Gemini Live speaks it (`VoiceController.speakExact`); if no Gemini audio starts within
+~7 s (offline, API error) the local espeak-ng voice (`tts.ts`, installed without sudo by
+`scripts/pi/ensure-tts.sh`) says it instead, and late Gemini audio for that turn is dropped.
+
+- One incident per alert id; repeated at most twice more, 60 s apart, only while unanswered and
+  not while the user is talking. After "keep printing", alerts of the same kind stay quiet (still
+  on screen) for 10 minutes.
+- Answers: the `answer_print_warning` Gemini tool (checked against the user's own transcribed
+  words by `classifyWarningAnswer`), a backup that matches the words when Gemini didn't call the
+  tool, or the touchscreen "Yes, stop it" / "No, keep printing" buttons. Stop uses the normal
+  `Printing.cancel()`; "stopped" is only said after the printer confirms it.
+- Grown-ups → "Test the print warning" runs a simulated incident that never sends printer commands.

@@ -6,11 +6,12 @@ import {
   GeminiLive, MORPHIX_SYSTEM_INSTRUCTION, MORPHIX_TOOLS, isAffirmative, speechStats, toMillimetres, type FunctionCall,
 } from "@morphix/gemini";
 import { MM_PER_INCH } from "@morphix/domain";
-import { scaledCheck, stlSize } from "@morphix/slicing";
+import { heightForDimension, scaledCheck, stlSize, type SizeDimension } from "@morphix/slicing";
 import { type Ctx, latestVersion, moveProject, now } from "./context";
 import { type Actions, PolicyError } from "./actions";
 import type { Printing } from "./printing";
 import { formatDuration } from "./printing";
+import { classifyWarningAnswer, type GuardianVoice } from "./guardian-voice";
 
 interface Turn {
   startedAt: number;
@@ -20,21 +21,35 @@ interface Turn {
   audioRel: string | null;
   /** App-generated event turn (not spoken by the user). */
   system: boolean;
+  /** answer_print_warning was handled during this turn. */
+  warningHandled?: boolean;
 }
 
 export class VoiceController {
   private live: GeminiLive | null = null;
   private turn: Turn | null = null;
   private balance: { value: number; at: number } | null = null;
+  /** Resolves when the next reply audio arrives (guardian warnings). */
+  private audioWaiter: (() => void) | null = null;
+  /** Drop Gemini audio until the turn ends (a warning that timed out and went to the local voice). */
+  private muteUntilTurnEnd = false;
+  guardianVoice: GuardianVoice | null = null;
 
   constructor(
     private ctx: Ctx,
     private actions: Actions,
-    private opts: { apiKey: string | undefined; model: string; meshyBalance: () => Promise<number | null>; printing: () => Printing | null },
+    private opts: {
+      apiKey: string | undefined;
+      model: string;
+      meshyBalance: () => Promise<number | null>;
+      printing: () => Printing | null;
+    },
   ) {
     if (opts.apiKey) {
       this.live = new GeminiLive(opts.apiKey, opts.model, MORPHIX_SYSTEM_INSTRUCTION, MORPHIX_TOOLS, {
         onAudio: (pcm) => {
+          if (this.muteUntilTurnEnd) return;
+          this.audioWaiter?.();
           if (this.turn) this.turn.audioBytes += pcm.length;
           this.emit({ type: "status", state: "speaking" });
           const ab = pcm.buffer.slice(pcm.byteOffset, pcm.byteOffset + pcm.byteLength);
@@ -52,7 +67,10 @@ export class VoiceController {
           this.emit({ type: "assistant-text", text: this.turn.assistant });
         },
         onInterrupted: () => this.emit({ type: "interrupted" }),
-        onTurnComplete: () => this.finishTurn(),
+        onTurnComplete: () => {
+          this.muteUntilTurnEnd = false;
+          this.finishTurn();
+        },
         onToolCall: (calls) => void this.handleTools(calls),
         onClose: (reason) => {
           this.ctx.log.write("info", "Gemini session closed", { reason });
@@ -64,6 +82,65 @@ export class VoiceController {
 
   get enabled(): boolean {
     return this.live !== null;
+  }
+
+  /** The user is talking to Morphix right now (a voice turn hasn't finished). */
+  get busy(): boolean {
+    return Boolean(this.turn && !this.turn.system);
+  }
+
+  /** Stop whatever is being said and play the alert chime on the touchscreen. */
+  interruptForAlert(): void {
+    this.emit({ type: "interrupted" });
+    this.emit({ type: "alert" });
+  }
+
+  /**
+   * Has Gemini say `text` word for word. True only once its audio actually started;
+   * false (and any late audio for that turn is dropped) if it can't within the time.
+   */
+  async speakExact(text: string, opts: { connectMs?: number; audioMs?: number } = {}): Promise<boolean> {
+    if (!this.live) return false;
+    try {
+      if (!this.live.connected) await this.live.ensureConnected(opts.connectMs ?? 5000);
+    } catch (e) {
+      this.ctx.log.write("warn", "Gemini unavailable for a spoken warning", { error: (e as Error).message });
+      return false;
+    }
+    this.turn = { startedAt: Date.now(), audioBytes: 0, user: "", assistant: "", audioRel: null, system: true };
+    this.muteUntilTurnEnd = false;
+    const started = new Promise<boolean>((resolve) => {
+      const timer = setTimeout(() => {
+        this.audioWaiter = null;
+        resolve(false);
+      }, opts.audioMs ?? 7000);
+      this.audioWaiter = () => {
+        clearTimeout(timer);
+        this.audioWaiter = null;
+        resolve(true);
+      };
+    });
+    try {
+      this.live.sendText(`[Morphix guardian alert] Say exactly this to the user, word for word, and nothing else, then wait for their answer: "${text}"`);
+    } catch (e) {
+      this.audioWaiter = null;
+      this.ctx.log.write("warn", "could not send the warning to Gemini", { error: (e as Error).message });
+      return false;
+    }
+    const ok = await started;
+    if (!ok) this.muteUntilTurnEnd = true; // the local voice takes over; don't talk over it later
+    return ok;
+  }
+
+  /** Quietly tells Gemini what the backup voice said, so it understands the user's answer. */
+  localSpeechContext(text: string): void {
+    try {
+      if (this.live?.connected) {
+        this.live.addContext(`[Morphix guardian alert] The app's backup voice just told the user: "${text}" If the user answers a stop-the-print question, call answer_print_warning.`);
+      }
+    } catch {
+      /* best effort */
+    }
   }
 
   private emit(e: VoiceEvent): void {
@@ -144,6 +221,15 @@ export class VoiceController {
     const user = turn.system ? null : save("user", turn.user || "(voice message)", turn.audioRel);
     const assistant = save("assistant", turn.assistant, null);
     this.emit({ type: "turn-complete", user, assistant });
+    // Backup for a print warning: act on a clear spoken answer even if Gemini didn't call the tool.
+    const gv = this.guardianVoice;
+    if (!turn.system && !turn.warningHandled && gv?.open) {
+      const decision = classifyWarningAnswer(turn.user);
+      if (decision) {
+        this.ctx.log.write("info", "print warning answered by voice (app matched the words)", { heard: turn.user.slice(0, 80), decision });
+        void gv.answer(decision, "voice", true);
+      }
+    }
   }
 
   // ---------------------------------------------------------------------
@@ -215,10 +301,13 @@ export class VoiceController {
         return { ok: true, status: "cancelled" };
       }
       case "set_model_height": {
-        const mm = toMillimetres(Number(a.value), String(a.unit ?? "mm"));
-        if (!(mm >= 5 && mm <= 600)) throw new PolicyError("height must be between 5 mm and 600 mm");
+        const sizeMm = toMillimetres(Number(a.value), String(a.unit ?? "mm"));
+        const dimension: SizeDimension = ["width", "length", "longest"].includes(String(a.dimension)) ? (String(a.dimension) as SizeDimension) : "height";
         const v = latestVersion(this.ctx, this.ctx.currentProjectId);
         if (!v) throw new PolicyError("there is no current model");
+        const native = this.nativeSize(String(v.stl_rel_path ?? ""));
+        const mm = dimension === "height" || !native ? sizeMm : heightForDimension(native, dimension, sizeMm);
+        if (!(mm >= 5 && mm <= 600)) throw new PolicyError("that size would make the model between 5 mm and 600 mm tall only; pick another size");
         this.ctx.db.run("UPDATE model_versions SET target_height_mm = ? WHERE id = ?", [Math.round(mm * 10) / 10, v.id]);
         try {
           moveProject(this.ctx, String(v.project_id), "sizing");
@@ -229,7 +318,7 @@ export class VoiceController {
         this.ctx.event({ type: "model-height", versionId: String(v.id), heightMm: mm });
         const size = this.sizeOf(String(v.stl_rel_path ?? ""), mm);
         return {
-          ok: true, heightMm: Math.round(mm), heightInches: Math.round((mm / MM_PER_INCH) * 10) / 10,
+          ok: true, dimension, heightMm: Math.round(mm), heightInches: Math.round((mm / MM_PER_INCH) * 10) / 10,
           ...(size ? { widthMm: Math.round(size.size.x), depthMm: Math.round(size.size.y), fitsPrinter: size.fits, buildVolumeMm: size.volume } : {}),
         };
       }
@@ -243,7 +332,9 @@ export class VoiceController {
           ok: true,
           project: project ? { title: project.title, state: project.state, modelKind: v?.kind ?? null } : null,
           targetHeightMm: target,
+          currentSizeMm: size ? { width: Math.round(size.size.x), length: Math.round(size.size.y), height: Math.round(size.size.z) } : null,
           fitsPrinter: size?.fits ?? null,
+          printWarning: this.guardianVoice?.view() ?? null,
           pendingAction: this.actions.current ? { kind: this.actions.current.kind, credits: this.actions.current.credits } : null,
           meshyCredits: await this.credits(),
           print: (() => {
@@ -313,8 +404,33 @@ export class VoiceController {
         }
         return await printing.cancel();
       }
+      case "answer_print_warning": {
+        const gv = this.guardianVoice;
+        if (!gv?.open) return { ok: false, error: "No print warning is waiting for an answer." };
+        if (!this.turn || this.turn.system) return { ok: false, error: "Only the user's own spoken answer counts." };
+        const wanted = a.decision === "stop" ? "stop" : a.decision === "keep_printing" ? "keep" : null;
+        const heard = classifyWarningAnswer(this.turn.user);
+        if (!wanted || heard !== wanted) {
+          return { ok: false, error: "The user's answer was not clear. Ask once more: yes, stop it, or no, keep printing?", heard: this.turn.user.slice(0, 80) };
+        }
+        this.turn.warningHandled = true;
+        const r = await gv.answer(wanted, "voice", false);
+        return {
+          ok: r.ok, stopped: r.stopped ?? false, message: r.message,
+          note: wanted === "keep" ? "Tell the user you'll keep printing and keep watching." : r.ok ? "Say exactly what message says." : "The printer did NOT confirm. Tell the user to press stop on the printer's screen.",
+        };
+      }
       default:
         return { ok: false, error: `unknown tool ${c.name}` };
+    }
+  }
+
+  private nativeSize(stlRel: string) {
+    if (!stlRel) return null;
+    try {
+      return stlSize(this.ctx.storage.read(this.ctx.storage.path(stlRel)));
+    } catch {
+      return null;
     }
   }
 

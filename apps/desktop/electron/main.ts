@@ -21,6 +21,8 @@ import { Printing } from "./printing";
 import { Jobs } from "./jobs";
 import { PhotoPipeline } from "./photo";
 import { createPortalBackend } from "./portal-backend";
+import { GuardianVoice } from "./guardian-voice";
+import { LocalTts } from "./tts";
 import { createPortal, loadPortalAuthConfig, type Portal } from "@morphix/portal";
 import { toMorphixError, getErrorEntry } from "@morphix/errors";
 import type { MachineCommand } from "@morphix/shared";
@@ -105,6 +107,30 @@ const voice = new VoiceController(ctx, actions, {
   printing: () => printing,
 });
 
+// Spoken Print Guardian warnings: Gemini's voice, or espeak-ng when Gemini can't.
+const localTts = new LocalTts();
+const guardianVoice = new GuardianVoice({
+  interrupt: () => voice.interruptForAlert(),
+  speakGemini: (text) => voice.speakExact(text),
+  speakLocal: async (text) => {
+    if (!localTts.available) return false;
+    const { pcm, sampleRate } = await localTts.synthesize(text);
+    ctx.send(IPC.voiceEvent, { type: "audio", pcm: pcm.buffer.slice(pcm.byteOffset, pcm.byteOffset + pcm.byteLength), sampleRate });
+    voice.localSpeechContext(text);
+    return true;
+  },
+  cancelPrint: () => printing.cancel(),
+  keepPrinting: () => void printing.guardianCommand("dismiss"),
+  resolveAlert: () => void printing.guardianCommand("resolve"),
+  userBusy: () => voice.busy,
+  onChange: () => ctx.event({ type: "guardian", snapshot: printing.view() }),
+  log: (level, message, extra) => log.write(level, message, extra),
+});
+voice.guardianVoice = guardianVoice;
+printing.voiceInfo = () => guardianVoice.view();
+printing.guardian.onUpdate((snap) => guardianVoice.onAlert(printing.view(snap).alert));
+log.write("info", "spoken print warnings", { gemini: voice.enabled, localVoice: localTts.available });
+
 process.on("uncaughtException", (e) => log.write("error", "uncaughtException", { message: e.message, stack: e.stack }));
 process.on("unhandledRejection", (e) => log.write("error", "unhandledRejection", { reason: String(e) }));
 
@@ -178,7 +204,7 @@ function onGenerationFinished(info: FinishedInfo): void {
     void voice.notify(
       info.kind === "refine"
         ? `The coloured version of "${info.title}" is ready on screen.`
-        : `The model "${info.title}" finished generating and is on screen now. Tell the user and ask how tall they want it.`,
+        : `The model "${info.title}" finished generating and is on screen now. Tell the user and ask: "How big would you like it?"`,
     );
   } else {
     void voice.notify(`Generating "${info.title}" failed: ${info.error}. Apologise briefly and offer to try again.`);
@@ -416,6 +442,15 @@ function registerIpc(): void {
     const allowed = ["start", "stop", "requestPause", "resolve", "dismiss", "resetBaseline"] as const;
     if (!(allowed as readonly string[]).includes(cmd)) throw new Error("unknown guardian command");
     return printing.guardianCommand(cmd as (typeof allowed)[number]);
+  });
+  handle(IPC.guardianAnswer, (decision: string) => {
+    if (decision !== "stop" && decision !== "keep") throw new Error("unknown answer");
+    return guardianVoice.answer(decision, "touch");
+  });
+  handle(IPC.guardianSimulate, () => {
+    guardianVoice.simulate("spaghetti");
+    ctx.event({ type: "navigate", page: "printer" });
+    return { ok: true, message: "Test warning started. Listen, then answer out loud (hold the mic) or tap a button. No printer commands are sent." };
   });
   handle(IPC.printerInfo, () => printer.info());
 

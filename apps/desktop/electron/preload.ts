@@ -52,6 +52,8 @@ const api: MorphixApi = {
   cancelPrint: () => ipcRenderer.invoke(IPC.cancelPrint),
   guardian: () => ipcRenderer.invoke(IPC.guardian),
   guardianCommand: (cmd) => ipcRenderer.invoke(IPC.guardianCommand, cmd),
+  guardianAnswer: (decision) => ipcRenderer.invoke(IPC.guardianAnswer, decision),
+  guardianSimulate: () => ipcRenderer.invoke(IPC.guardianSimulate),
 
   networkStatus: () => ipcRenderer.invoke(IPC.networkStatus),
   wifiScan: () => ipcRenderer.invoke(IPC.wifiScan),

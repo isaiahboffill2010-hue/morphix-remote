@@ -158,6 +158,11 @@ export class GeminiLive {
     this.send({ realtimeInput: { text } });
   }
 
+  /** Adds context to the conversation without asking Gemini to reply. */
+  addContext(text: string): void {
+    this.send({ clientContent: { turns: [{ role: "user", parts: [{ text }] }], turnComplete: false } });
+  }
+
   sendToolResponses(responses: { id: string; name: string; response: Record<string, unknown> }[]): void {
     this.send({ toolResponse: { functionResponses: responses } });
   }
@@ -207,12 +212,18 @@ export const MORPHIX_TOOLS: FunctionDeclaration[] = [
   { name: "cancel_pending_action", description: "Cancel the pending action when the user says no or changes their mind." },
   {
     name: "set_model_height",
-    description: "Scale the current model to a target height.",
+    description:
+      "Resize the current model (always proportionally). Give the size the user said and which dimension it is: height, width, length, or longest (overall size / longest side).",
     parameters: {
       type: "OBJECT",
       properties: {
-        value: { type: "NUMBER", description: "Height value." },
-        unit: { type: "STRING", enum: ["mm", "cm", "in"], description: "Unit of the height." },
+        value: { type: "NUMBER", description: "Size value." },
+        unit: { type: "STRING", enum: ["mm", "cm", "in"], description: "Unit of the size." },
+        dimension: {
+          type: "STRING",
+          enum: ["height", "width", "length", "longest"],
+          description: "Which dimension the size refers to. Default height.",
+        },
       },
       required: ["value", "unit"],
     },
@@ -255,6 +266,16 @@ export const MORPHIX_TOOLS: FunctionDeclaration[] = [
   { name: "stop_printer", description: "Emergency stop: cancel the print and cool down. Only when the user clearly asks to stop." },
   { name: "pause_print", description: "Pause the running print (always allowed when printer control is enabled)." },
   { name: "cancel_print", description: "Cancel the running print. Ask the user to confirm first in conversation." },
+  {
+    name: "answer_print_warning",
+    description:
+      "The user answered a spoken Print Guardian warning. decision stop = they want the print stopped (e.g. 'yes, stop it'); keep_printing = they want it to continue (e.g. 'no, keep printing'). Call it right after their answer.",
+    parameters: {
+      type: "OBJECT",
+      properties: { decision: { type: "STRING", enum: ["stop", "keep_printing"] } },
+      required: ["decision"],
+    },
+  },
 ];
 
 export const MORPHIX_SYSTEM_INSTRUCTION = `You are Morphix, the friendly voice of an AI 3D printer on a Raspberry Pi touchscreen.
@@ -265,12 +286,15 @@ How you work:
 - Write Meshy prompts for a single solid printable object: describe shape, pose and style; include a flat stable base; avoid thin fragile parts, floating pieces and text.
 - generate_model and revise_model only PROPOSE the job. Tell the user the credit cost from the tool result and ask them to say yes or tap Confirm. Only call confirm_pending_action after they clearly say yes.
 - Never say a model is generating or ready unless a tool result or a [Morphix event] message says so.
-- When a model is ready, tell the user and ask how tall they want it. Use set_model_height for sizes like "six inches".
+- When a model is ready, tell the user and ask: "How big would you like it?" Do not ask "what height".
+- Sizing is always proportional. If the user names the dimension ("six inches tall", "ten centimetres wide", "four inches long") call set_model_height with that dimension. "Big", "overall" or "longest side" means longest.
+- If the user gives a single number without saying which way (e.g. "make it four inches") and the model's width, length and height are clearly different (see get_app_state currentSizeMm), ask one short question: "Four inches tall, wide, or long?" If the shape is roughly as tall as it is wide and long, just use height.
 - To print: call prepare_print first (free), tell the user the estimated time and filament, then call request_print when they want to print. request_print only proposes; the print starts after the user taps Confirm or clearly says yes (then call confirm_pending_action). Relay any "locked" or "not verified" message honestly.
 - You can also control the printer's light, fan, home position, heaters and emergency stop with the printer_* tools. Heating and stopping only when the user clearly asks. Some controls may be locked until a grown-up switches them on; say so kindly.
 - Many users are children: use simple, friendly words and keep safety first (never encourage touching the hot nozzle or bed).
 - Never say the printer started, paused or stopped unless a tool result says it was confirmed by the printer.
-- Messages that start with [Morphix event] come from the app, not the user. React to them briefly.`;
+- Messages that start with [Morphix event] come from the app, not the user. React to them briefly.
+- Messages that start with [Morphix guardian alert] are urgent print warnings from the camera. Say the given warning word for word, nothing else, then wait. When the user answers it, call answer_print_warning straight away (stop or keep_printing) and do not call cancel_print or stop_printer for it. If their answer is unclear, ask once more: "Yes, stop it, or no, keep printing?" Only say the print stopped if the tool result says the printer confirmed it.`;
 
 /** Deterministic check that the user's own words were a clear "yes". */
 export function isAffirmative(utterance: string): boolean {

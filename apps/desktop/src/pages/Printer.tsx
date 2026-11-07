@@ -76,6 +76,9 @@ export function PrinterPage({ status, settings, onError }: { status: PrinterStat
   const job = control?.job;
   const ended = job ? ["completed", "cancelled", "failed"].includes(job.phase) : false;
   const alert = guardian?.alert;
+  const spoken = guardian?.voice ?? null;
+  // "Yes, stop it" / "No, keep printing" — the same answers the voice accepts.
+  const answer = (d: "stop" | "keep") => act(() => api.guardianAnswer(d));
   return (
     <div className="printer">
       <div style={{ position: "relative", minHeight: 0 }}>
@@ -152,17 +155,36 @@ export function PrinterPage({ status, settings, onError }: { status: PrinterStat
           <div className="muted small" style={{ margin: "6px 0" }}>
             {guardian ? `${guardian.label} · camera ${guardian.camera}${guardian.gemini ? " · Gemini checks on" : ""}` : "–"}
           </div>
-          {alert && (
-            <div className="alert-box" style={{ borderColor: ALERT_COLORS[alert.state] ?? "var(--line)" }}>
-              <div style={{ fontWeight: 700, color: ALERT_COLORS[alert.state] }}>{alert.kind} · {alert.state.replaceAll("_", " ")}</div>
-              {alert.explanation && <div className="small" style={{ marginTop: 4 }}>{alert.explanation}</div>}
-              {alert.evidenceUrls.length > 0 && <img className="evidence" src={alert.evidenceUrls[alert.evidenceUrls.length - 1]} alt="evidence" />}
-              <div className="row" style={{ marginTop: 8, gap: 6 }}>
-                {alert.state !== "pause_confirmed" && (
+          {(alert || spoken?.simulated) && (
+            <div className="alert-box" style={{ borderColor: ALERT_COLORS[alert?.state ?? "confirmed_failure"] ?? "var(--line)" }}>
+              {alert && !spoken?.simulated ? (
+                <div style={{ fontWeight: 700, color: ALERT_COLORS[alert.state] }}>{alert.kind} · {alert.state.replaceAll("_", " ")}</div>
+              ) : (
+                <div style={{ fontWeight: 700, color: ALERT_COLORS.confirmed_failure }}>🧪 Test warning · no printer commands are sent</div>
+              )}
+              {alert?.explanation && !spoken?.simulated && <div className="small" style={{ marginTop: 4 }}>{alert.explanation}</div>}
+              {alert && !spoken?.simulated && alert.evidenceUrls.length > 0 && <img className="evidence" src={alert.evidenceUrls[alert.evidenceUrls.length - 1]} alt="evidence" />}
+              {spoken && (
+                <div className="small" style={{ marginTop: 6 }}>
+                  {spoken.awaitingAnswer
+                    ? <>🔊 Stop the print? Say <b>“yes, stop it”</b> or <b>“no, keep printing”</b> (hold the mic), or tap below.</>
+                    : "Working on your answer…"}
+                  {spoken.lastSpokenBy === "none" && <div style={{ color: "var(--bad)" }}>The speaker couldn't play the warning — please read this screen.</div>}
+                </div>
+              )}
+              <div className="row" style={{ marginTop: 8, gap: 6, flexWrap: "wrap" }}>
+                {spoken ? (
+                  <>
+                    <button className="btn danger-btn" style={{ minHeight: 42 }} disabled={!spoken.awaitingAnswer} onClick={() => void answer("stop")}>Yes, stop it</button>
+                    <button className="btn ghost" style={{ minHeight: 42 }} disabled={!spoken.awaitingAnswer} onClick={() => void answer("keep")}>No, keep printing</button>
+                  </>
+                ) : (
+                  <button className="btn ghost" style={{ minHeight: 42 }} onClick={() => void g("dismiss")}>It's fine</button>
+                )}
+                {alert && !spoken?.simulated && alert.state !== "pause_confirmed" && (
                   <button className="btn" style={{ minHeight: 42 }} onClick={() => void g("requestPause")}>{guardian?.pauseAvailable ? "Pause print" : "How to pause"}</button>
                 )}
-                <button className="btn ghost" style={{ minHeight: 42 }} onClick={() => void g("dismiss")}>It's fine</button>
-                <button className="btn ghost" style={{ minHeight: 42 }} onClick={() => void g("resolve")}>Resolved</button>
+                {alert && !spoken?.simulated && <button className="btn ghost" style={{ minHeight: 42 }} onClick={() => void g("resolve")}>Resolved</button>}
               </div>
             </div>
           )}

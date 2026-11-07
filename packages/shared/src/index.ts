@@ -140,6 +140,8 @@ export type VoiceEvent =
   | { type: "assistant-text"; text: string }
   | { type: "audio"; pcm: ArrayBuffer; sampleRate: number }
   | { type: "interrupted" }
+  /** A Print Guardian warning is about to be spoken: play the alert chime. */
+  | { type: "alert" }
   | { type: "turn-complete"; user: AssistantTurn | null; assistant: AssistantTurn | null }
   | { type: "error"; message: string };
 
@@ -245,6 +247,19 @@ export interface GuardianView {
   gemini: boolean;
   autoPause: boolean;
   pauseAvailable: boolean;
+  /** Spoken warning waiting for "stop" / "keep printing" (voice or touch). */
+  voice?: GuardianVoiceView | null;
+}
+
+export interface GuardianVoiceView {
+  alertId: string;
+  kind: string;
+  problem: string;
+  announcements: number;
+  awaitingAnswer: boolean;
+  lastSpokenBy: "gemini" | "local" | "none" | null;
+  /** A test from Grown-ups: no printer commands are ever sent. */
+  simulated: boolean;
 }
 
 export interface WifiNetwork {
@@ -308,6 +323,10 @@ export interface MorphixApi {
   cancelPrint(): Promise<{ ok: boolean; message: string }>;
   guardian(): Promise<GuardianView>;
   guardianCommand(cmd: "start" | "stop" | "requestPause" | "resolve" | "dismiss" | "resetBaseline"): Promise<GuardianView>;
+  /** Answer the spoken print warning: same as saying "yes, stop it" / "no, keep printing". */
+  guardianAnswer(decision: "stop" | "keep"): Promise<{ ok: boolean; message: string }>;
+  /** Speak a pretend warning to test audio and answers. Never sends printer commands. */
+  guardianSimulate(): Promise<{ ok: boolean; message: string }>;
 
   networkStatus(): Promise<NetworkStatus>;
   wifiScan(): Promise<WifiNetwork[]>;
@@ -354,6 +373,8 @@ export const IPC = {
   cancelPrint: "print:cancel",
   guardian: "guardian:get",
   guardianCommand: "guardian:command",
+  guardianAnswer: "guardian:answer",
+  guardianSimulate: "guardian:simulate",
   networkStatus: "network:status",
   wifiScan: "network:scan",
   wifiConnect: "network:connect",

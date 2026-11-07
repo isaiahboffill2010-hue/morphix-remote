@@ -12,6 +12,9 @@ bash scripts/pi/install-user-services.sh
 echo "== Fonts"
 bash scripts/pi/ensure-fonts.sh || echo "WARNING: could not install the emoji font"
 
+echo "== Speech (spoken print warnings fallback)"
+bash scripts/pi/ensure-tts.sh || echo "WARNING: could not install espeak-ng; print warnings will only use Gemini's voice"
+
 echo "== Guardian (Python/OpenCV)"
 bash scripts/pi/ensure-vision.sh || echo "WARNING: guardian Python setup failed; monitoring will report the worker as down"
 
