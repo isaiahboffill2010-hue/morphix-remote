@@ -49,6 +49,7 @@ const api: MorphixApi = {
   requestPrint: (jobId) => ipcRenderer.invoke(IPC.requestPrint, jobId),
   printStatus: () => ipcRenderer.invoke(IPC.printStatus),
   pausePrint: () => ipcRenderer.invoke(IPC.pausePrint),
+  resumePrint: () => ipcRenderer.invoke(IPC.resumePrint),
   cancelPrint: () => ipcRenderer.invoke(IPC.cancelPrint),
   guardian: () => ipcRenderer.invoke(IPC.guardian),
   guardianCommand: (cmd) => ipcRenderer.invoke(IPC.guardianCommand, cmd),

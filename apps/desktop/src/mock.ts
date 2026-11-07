@@ -113,6 +113,7 @@ export function createMockApi(): MorphixApi {
     requestPrint: async () => {},
     printStatus: async () => ({ enabled: false, gxVerified: false, job: null, busy: null, lastMessage: null }),
     pausePrint: async () => ({ ok: false, message: "preview" }),
+    resumePrint: async () => ({ ok: false, message: "(mock) nothing to resume" }),
     cancelPrint: async () => ({ ok: false, message: "preview" }),
     guardian: async () => ({ running: false, state: "idle", label: "Not monitoring", camera: "unknown", worker: "stopped", alert: null, gemini: false, autoPause: false, pauseAvailable: false }),
     guardianCommand: async () => ({ running: true, state: "monitoring", label: "Watching the print", camera: "ok", worker: "running", alert: null, gemini: false, autoPause: false, pauseAvailable: false }),

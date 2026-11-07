@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import type { AppSettings, GuardianView, MachineCapability, MachineCommand, PrintControlStatus, PrinterStatus } from "@morphix/shared";
+import type { AppSettings, GuardianView, PrintControlStatus, PrinterStatus } from "@morphix/shared";
 import { api } from "../bridge";
 
 const ALERT_COLORS: Record<string, string> = {
@@ -11,53 +11,28 @@ const PHASE_LABEL: Record<string, string> = {
   printing: "Printing", paused: "Paused", completed: "All done! 🎉", cancelled: "Cancelled", failed: "Stopped with a problem",
 };
 
-export function PrinterPage({ status, settings, onError }: { status: PrinterStatus | null; settings: AppSettings | null; onError: (m: string) => void }) {
+export function PrinterPage({ status, settings, onOpenControl, onError }: {
+  status: PrinterStatus | null;
+  settings: AppSettings | null;
+  onOpenControl: () => void;
+  onError: (m: string) => void;
+}) {
   const [camError, setCamError] = useState(false);
   const [camKey, setCamKey] = useState(0);
   const [guardian, setGuardian] = useState<GuardianView | null>(null);
   const [control, setControl] = useState<PrintControlStatus | null>(null);
   const [message, setMessage] = useState<string | null>(null);
-  const [caps, setCaps] = useState<Record<string, MachineCapability>>({});
-  const [light, setLight] = useState(false);
-  const [fan, setFan] = useState(false);
-  const [busy, setBusy] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
 
   useEffect(() => {
     api.guardian().then(setGuardian);
     api.printStatus().then(setControl);
-    const loadCaps = () => api.machineCapabilities().then((list) => setCaps(Object.fromEntries(list.map((c) => [c.command, c])))).catch(() => {});
-    void loadCaps();
-    const t = window.setInterval(loadCaps, 5000);
     const off = api.onAppEvent((e) => {
       if (e.type === "guardian") setGuardian(e.snapshot);
       if (e.type === "print-status") setControl(e.status);
     });
-    return () => {
-      window.clearInterval(t);
-      off();
-    };
+    return off;
   }, []);
-
-  useEffect(() => {
-    if (status?.online && typeof (status as { led?: unknown }).led !== "undefined") setLight(String((status as { led?: unknown }).led) === "1");
-  }, [status]);
-
-  const machine = async (c: MachineCommand, label: string) => {
-    setBusy(label);
-    try {
-      const r = await api.machineCommand(c);
-      setMessage(r.message);
-      if (!r.ok) onError(r.code ? `${r.code}|${r.message}||` : r.message);
-      return r.ok;
-    } catch (e) {
-      onError((e as Error).message);
-      return false;
-    } finally {
-      setBusy(null);
-    }
-  };
-  const can = (cmd: string) => caps[cmd]?.allowedNow ?? false;
-  const why = (cmd: string) => (caps[cmd] && !caps[cmd].allowedNow ? caps[cmd].reason ?? "Locked" : undefined);
 
   const g = async (cmd: Parameters<typeof api.guardianCommand>[0]) => {
     try {
@@ -67,9 +42,16 @@ export function PrinterPage({ status, settings, onError }: { status: PrinterStat
     }
   };
   const act = async (fn: () => Promise<{ ok: boolean; message: string }>) => {
-    const r = await fn();
-    setMessage(r.message);
-    if (!r.ok) onError(r.message);
+    setBusy(true);
+    try {
+      const r = await fn();
+      setMessage(r.message);
+      if (!r.ok) onError(r.message);
+    } catch (e) {
+      onError((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
   };
 
   const t = status?.temps;
@@ -108,45 +90,25 @@ export function PrinterPage({ status, settings, onError }: { status: PrinterStat
             <div className="progress" style={{ margin: "8px 0" }}><div style={{ width: `${job.progress}%` }} /></div>
             <div className="muted small">{PHASE_LABEL[job.phase] ?? job.phase}{job.layer[1] ? ` · layer ${job.layer[0]}/${job.layer[1]}` : ""}{job.offline ? " · printer offline" : ""}</div>
             {ended ? null : control?.enabled ? (
-              <div className="row" style={{ marginTop: 8 }}>
-                <button className="btn" onClick={() => void act(api.pausePrint)}>Pause</button>
-                <button className="btn danger-btn" onClick={() => confirm("Cancel this print?") && void act(api.cancelPrint)}>Cancel</button>
-              </div>
+              <>
+                <div className="row" style={{ marginTop: 8 }}>
+                  {job.phase === "paused" ? (
+                    <button className="btn" disabled={busy} onClick={() => confirm("Resume printing? Make sure the bed is clear of your hands and tools.") && void act(api.resumePrint)}>Resume print</button>
+                  ) : (
+                    <button className="btn" disabled={busy} onClick={() => void act(api.pausePrint)}>Pause print</button>
+                  )}
+                  <button className="btn danger-btn" disabled={busy} onClick={() => confirm("End this print? It can't be continued afterwards.") && void act(api.cancelPrint)}>End print</button>
+                </div>
+                {job.phase === "paused" && (
+                  <button className="btn ghost" style={{ marginTop: 6, minHeight: 40 }} onClick={onOpenControl}>🎛️ Open Control (filament, heat, light…)</button>
+                )}
+              </>
             ) : (
-              <div className="muted small" style={{ marginTop: 6 }}>Use the printer's screen to pause or cancel.</div>
+              <div className="muted small" style={{ marginTop: 6 }}>Use the printer's screen to pause or end the print.</div>
             )}
             {(message || control?.lastMessage) && <div className="muted small" style={{ marginTop: 6 }}>{message || control?.lastMessage}</div>}
           </div>
         )}
-        <div className="card">
-          <h3>Controls</h3>
-          <div className="ctl-grid">
-            <button className={`ctl ${light ? "on" : ""}`} disabled={!can("setLight") || busy !== null} title={why("setLight")}
-              onClick={async () => { if (await machine({ cmd: "light", on: !light }, "light")) setLight(!light); }}>
-              <span className="emoji">💡</span>Light
-            </button>
-            <button className={`ctl ${fan ? "on" : ""}`} disabled={!can("setFan") || busy !== null} title={why("setFan")}
-              onClick={async () => { if (await machine({ cmd: "fan", percent: fan ? 0 : 100 }, "fan")) setFan(!fan); }}>
-              <span className="emoji">🌀</span>Fan
-            </button>
-            <button className="ctl" disabled={!can("home") || busy !== null} title={why("home")} onClick={() => void machine({ cmd: "home" }, "home")}>
-              <span className="emoji">🏠</span>Home
-            </button>
-            <button className="ctl" disabled={!can("setNozzleTemp") || busy !== null} title={why("setNozzleTemp")}
-              onClick={async () => { if (confirm("Heat up for PLA? (nozzle 210 °C, bed 60 °C) — it gets HOT!")) { await machine({ cmd: "bed", celsius: 60 }, "heat"); await machine({ cmd: "nozzle", celsius: 210 }, "heat"); } }}>
-              <span className="emoji">🔥</span>Heat up
-            </button>
-            <button className="ctl" disabled={!can("coolDown") || busy !== null} title={why("coolDown")} onClick={() => void machine({ cmd: "cooldown" }, "cool")}>
-              <span className="emoji">❄️</span>Cool down
-            </button>
-            <button className="ctl danger" disabled={!can("emergencyStop") || busy !== null} title={why("emergencyStop")}
-              onClick={() => { if (confirm("Stop the printer now?")) void machine({ cmd: "stop" }, "stop"); }}>
-              <span className="emoji">🛑</span>Stop
-            </button>
-          </div>
-          {!control?.enabled && <div className="muted small" style={{ marginTop: 6 }}>🔒 Controls are locked until a grown-up switches them on.</div>}
-          {busy && <div className="muted small" style={{ marginTop: 6 }}>Working on it…</div>}
-        </div>
         <div className="card">
           <div className="row" style={{ justifyContent: "space-between" }}>
             <h3 style={{ margin: 0 }}>🛡️ Print Guardian</h3>

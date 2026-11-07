@@ -366,6 +366,19 @@ export class Printing {
     return { ok: r.confirmed, message: this.lastMessage };
   }
 
+  /** M24 for the paused job. The tap on Resume is the fresh approval the controller requires. */
+  async resume(): Promise<{ ok: boolean; message: string }> {
+    if (!this.o.controlsEnabled) return { ok: false, message: "Printer control is locked — resume on the printer itself." };
+    const job = this.tracker.job;
+    if (job.phase !== "paused" || !job.fileName) return { ok: false, message: "There is no paused print to resume." };
+    const jobId = job.jobId ?? `resume-${Date.now()}`;
+    const authorization = this.authorizer.authorize({ jobId, fileName: job.fileName, approvedBy: "touch", expiresInMs: 60_000 });
+    const r = await this.controller.resume({ jobId, fileName: job.fileName, authorization });
+    this.lastMessage = r.confirmed ? "Printer confirmed the print is running again" : `Resume not confirmed${r.error ? `: ${r.error}` : ""} — use the printer's screen.`;
+    this.emitStatus();
+    return { ok: r.confirmed, message: this.lastMessage };
+  }
+
   async cancel(): Promise<{ ok: boolean; message: string }> {
     if (!this.o.controlsEnabled) return { ok: false, message: "Printer control is locked — cancel on the printer itself." };
     this.tracker.noteCancelRequested();

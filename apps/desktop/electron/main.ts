@@ -442,6 +442,7 @@ function registerIpc(): void {
   });
   handle(IPC.printStatus, () => printing.status());
   handle(IPC.pausePrint, () => printing.pause());
+  handle(IPC.resumePrint, () => printing.resume());
   handle(IPC.cancelPrint, () => printing.cancel());
   handle(IPC.guardian, () => printing.view());
   handle(IPC.guardianCommand, (cmd: string) => {

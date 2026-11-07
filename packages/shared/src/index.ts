@@ -320,6 +320,7 @@ export interface MorphixApi {
   requestPrint(jobId: string): Promise<void>;
   printStatus(): Promise<PrintControlStatus>;
   pausePrint(): Promise<{ ok: boolean; message: string }>;
+  resumePrint(): Promise<{ ok: boolean; message: string }>;
   cancelPrint(): Promise<{ ok: boolean; message: string }>;
   guardian(): Promise<GuardianView>;
   guardianCommand(cmd: "start" | "stop" | "requestPause" | "resolve" | "dismiss" | "resetBaseline"): Promise<GuardianView>;
@@ -370,6 +371,7 @@ export const IPC = {
   requestPrint: "print:request",
   printStatus: "print:status",
   pausePrint: "print:pause",
+  resumePrint: "print:resume",
   cancelPrint: "print:cancel",
   guardian: "guardian:get",
   guardianCommand: "guardian:command",

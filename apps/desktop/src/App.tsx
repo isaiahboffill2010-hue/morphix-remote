@@ -10,10 +10,11 @@ import { AssistantPage } from "./pages/Assistant";
 import { LibraryPage } from "./pages/Library";
 import { ViewerPage } from "./pages/Viewer";
 import { PrinterPage } from "./pages/Printer";
+import { ControlPage } from "./pages/Control";
 import { SettingsPage } from "./pages/Settings";
 import { PreparePage } from "./pages/Prepare";
 
-export type Page = "assistant" | "library" | "viewer" | "prepare" | "printer" | "settings";
+export type Page = "assistant" | "library" | "viewer" | "prepare" | "printer" | "control" | "settings";
 type RailPage = Exclude<Page, "prepare">;
 export type VoiceState = Extract<VoiceEvent, { type: "status" }>["state"] | "listening";
 
@@ -33,8 +34,8 @@ export interface Voice {
 }
 
 type NavItem = Exclude<RailPage, "viewer">;
-const EMOJI: Record<NavItem, string> = { assistant: "🎤", library: "🧸", printer: "🖨️", settings: "⚙️" };
-const LABELS: Record<NavItem, string> = { assistant: "Make", library: "My Things", printer: "Printer", settings: "Grown-ups" };
+const EMOJI: Record<NavItem, string> = { assistant: "🎤", library: "🧸", printer: "🖨️", control: "🎛️", settings: "⚙️" };
+const LABELS: Record<NavItem, string> = { assistant: "Make", library: "My Things", printer: "Printer", control: "Control", settings: "Grown-ups" };
 const STATE_TEXT: Record<VoiceState, string> = {
   idle: "Hold the button and talk!", ready: "Hold the button and talk!", listening: "I'm listening… let go when you're done",
   connecting: "Waking up…", thinking: "Hmm, let me think…", speaking: "Talking… (hold to interrupt)", offline: "Hold the button and talk!",
@@ -307,7 +308,8 @@ export function App() {
           {page === "library" && <LibraryPage onOpen={openProject} />}
           {page === "viewer" && <ViewerPage projectId={projectId} settings={settings} heightEvent={heightEvent} onBrowse={() => setPage("library")} onPrepare={() => setPage("prepare")} onError={showNotice} />}
           {page === "prepare" && <PreparePage projectId={projectId} onBack={() => setPage("viewer")} onError={showNotice} />}
-          {page === "printer" && <PrinterPage status={printer} settings={settings} onError={showNotice} />}
+          {page === "printer" && <PrinterPage status={printer} settings={settings} onOpenControl={() => setPage("control")} onError={showNotice} />}
+          {page === "control" && <ControlPage status={printer} onOpenPrinter={() => setPage("printer")} onError={showNotice} />}
           {page === "settings" && <SettingsPage settings={settings} onError={showNotice} />}
         </PageBoundary>
         <JobBar />
