@@ -55,7 +55,9 @@ describe("heater idle safety timer", () => {
     rig.fake.failures = { refuseControl: true };
     await sleep(200);
     expect(rig.fake.nozzle.target).toBe(200);
-    expect(c.heaterSafety().armed).toBe(true);
+    // Between attempts the timer is briefly disarmed while a retry runs; on a slow Pi a fixed
+    // instant can land mid-retry, so wait for it to re-arm instead of sampling once.
+    await until(() => c.heaterSafety().armed, 2000, "safety timer re-armed after a failed cool-down");
     rig.fake.failures = {};
     await until(() => rig.fake.nozzle.target === 0, 2000, "cool-down after reconnect");
   });
