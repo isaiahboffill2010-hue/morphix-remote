@@ -5,7 +5,9 @@
 set -euo pipefail
 DEST="$HOME/.local/share/morphix-tts"
 RUN="$DEST/run-espeak"
-if [ -x "$RUN" ] && "$RUN" --version >/dev/null 2>&1; then exit 0; fi
+# A real synthesis check (--version succeeds even when the voice data can't be found).
+speaks() { [ "$("$1" --stdout -v en-us ok 2>/dev/null | head -c 4)" = "RIFF" ]; }
+if [ -x "$RUN" ] && speaks "$RUN"; then exit 0; fi
 if command -v espeak-ng >/dev/null 2>&1; then
   mkdir -p "$DEST"
   printf '#!/bin/sh\nexec espeak-ng "$@"\n' > "$RUN"
@@ -21,7 +23,9 @@ rm -rf "$DEST.new"
 mkdir -p "$DEST.new"
 for d in ./*.deb; do dpkg -x "$d" "$DEST.new"; done
 BIN="$(find "$DEST.new" -path '*/bin/espeak-ng' -type f | head -1)"
-DATA="$(find "$DEST.new" -type d -name espeak-ng-data | head -1)"
+# The real data dir holds phontab (the package also ships a doc dir named espeak-ng-data).
+PHONTAB="$(find "$DEST.new" -name phontab -path '*espeak-ng-data*' | head -1)"
+DATA="${PHONTAB:+$(dirname "$PHONTAB")}"
 LIBS="$(dirname "$(find "$DEST.new" -name 'libespeak-ng.so*' | head -1)")"
 [ -n "$BIN" ] && [ -n "$DATA" ] && [ -n "$LIBS" ] || { echo "espeak-ng packages did not unpack as expected" >&2; exit 1; }
 rm -rf "$DEST"
@@ -33,4 +37,4 @@ export LD_LIBRARY_PATH="$LIBS\${LD_LIBRARY_PATH:+:\$LD_LIBRARY_PATH}"
 exec "$BIN" --path="$(dirname "$DATA")" "\$@"
 EOF
 chmod +x "$RUN"
-"$RUN" --version >/dev/null && echo "espeak-ng installed for local speech"
+if speaks "$RUN"; then echo "espeak-ng installed for local speech"; else echo "espeak-ng installed but cannot speak" >&2; exit 1; fi

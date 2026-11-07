@@ -130,6 +130,12 @@ voice.guardianVoice = guardianVoice;
 printing.voiceInfo = () => guardianVoice.view();
 printing.guardian.onUpdate((snap) => guardianVoice.onAlert(printing.view(snap).alert));
 log.write("info", "spoken print warnings", { gemini: voice.enabled, localVoice: localTts.available });
+if (localTts.available) {
+  localTts.synthesize("ok").then(
+    () => log.write("info", "local voice self-test ok"),
+    (e) => log.write("warn", "local voice self-test failed", { error: (e as Error).message }),
+  );
+}
 
 process.on("uncaughtException", (e) => log.write("error", "uncaughtException", { message: e.message, stack: e.stack }));
 process.on("unhandledRejection", (e) => log.write("error", "unhandledRejection", { reason: String(e) }));
