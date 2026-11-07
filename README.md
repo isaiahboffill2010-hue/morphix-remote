@@ -18,6 +18,9 @@ systemctl --user restart morphix
 ```
 Portal: `http://192.168.86.38:8443` (same Wi-Fi).
 
+Remote phone access through a Vercel UI and outbound-only tunnel is documented in
+[`docs/REMOTE.md`](docs/REMOTE.md). It uses phone pairing instead of accounts and keeps all models on the Pi.
+
 ## Repository
 ```
 apps/desktop/           Electron main + preload, React touchscreen UI (1024×600)

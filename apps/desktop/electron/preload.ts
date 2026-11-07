@@ -45,6 +45,7 @@ const api: MorphixApi = {
   machineCapabilities: () => ipcRenderer.invoke(IPC.machineCapabilities),
   jobs: () => ipcRenderer.invoke(IPC.jobs),
   portalInfo: () => ipcRenderer.invoke(IPC.portalInfo),
+  remotePairing: () => ipcRenderer.invoke(IPC.remotePairing),
   latestPrintJob: (projectId) => ipcRenderer.invoke(IPC.latestPrintJob, projectId),
   requestPrint: (jobId) => ipcRenderer.invoke(IPC.requestPrint, jobId),
   printStatus: () => ipcRenderer.invoke(IPC.printStatus),

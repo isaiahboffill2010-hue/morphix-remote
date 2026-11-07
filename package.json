@@ -7,13 +7,16 @@
   "scripts": {
     "build:main": "node scripts/build-main.mjs",
     "build:renderer": "vite build --config apps/desktop/vite.config.ts",
+    "build:remote": "vite build --config apps/remote/vite.config.ts",
     "build": "npm run build:main && npm run build:renderer",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run",
     "dev:renderer": "vite --config apps/desktop/vite.config.ts",
+    "dev:remote": "vite --config apps/remote/vite.config.ts --port 5174",
     "start": "electron ."
   },
   "dependencies": {
+    "qrcode": "^1.5.4",
     "react": "18.3.1",
     "react-dom": "18.3.1",
     "sql.js": "1.12.0",
@@ -21,6 +24,7 @@
   },
   "devDependencies": {
     "@types/node": "22.20.5",
+    "@types/qrcode": "^1.5.5",
     "@types/react": "18.3.31",
     "@types/react-dom": "18.3.7",
     "@types/sql.js": "1.4.11",

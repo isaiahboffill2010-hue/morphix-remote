@@ -316,6 +316,7 @@ export interface MorphixApi {
   machineCapabilities(): Promise<MachineCapability[]>;
   jobs(): Promise<JobView[]>;
   portalInfo(): Promise<{ running: boolean; url: string | null; authConfigured: boolean; missing: string[] }>;
+  remotePairing(): Promise<{ running: boolean; qrDataUrl: string | null; expiresAt: string | null; message?: string }>;
   latestPrintJob(projectId: string): Promise<PrepareSummary | null>;
   requestPrint(jobId: string): Promise<void>;
   printStatus(): Promise<PrintControlStatus>;
@@ -367,6 +368,7 @@ export const IPC = {
   machineCapabilities: "printer:capabilities",
   jobs: "jobs:list",
   portalInfo: "portal:info",
+  remotePairing: "remote:pairing",
   latestPrintJob: "print:latest",
   requestPrint: "print:request",
   printStatus: "print:status",

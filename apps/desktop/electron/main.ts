@@ -24,8 +24,10 @@ import { createPortalBackend } from "./portal-backend";
 import { GuardianVoice } from "./guardian-voice";
 import { LocalTts } from "./tts";
 import { createPortal, loadPortalAuthConfig, type Portal } from "@morphix/portal";
+import { MorphixRemote } from "@morphix/remote";
 import { toMorphixError, getErrorEntry } from "@morphix/errors";
 import type { MachineCommand } from "@morphix/shared";
+import QRCode from "qrcode";
 
 const APP_DIR = resolve(__dirname, "..");
 const REPO_ROOT = resolve(APP_DIR, "..", "..");
@@ -71,6 +73,7 @@ const ALLOW_UNVERIFIED = new Set((env("MORPHIX_ALLOW_UNVERIFIED") || "").split("
 const PORTAL_PORT = Number(env("PORTAL_PORT") || 8443);
 let portal: Portal | null = null;
 let portalUrl: string | null = null;
+let remote: MorphixRemote | null = null;
 const printing = new Printing(ctx, {
   repoRoot: REPO_ROOT,
   printerHost: PRINTER_HOST,
@@ -432,6 +435,15 @@ function registerIpc(): void {
     const a = loadPortalAuthConfig(process.env);
     return { running: portal !== null, url: portalUrl, authConfigured: a.ok, missing: a.ok ? [] : [...a.missing, ...a.problems] };
   });
+  handle(IPC.remotePairing, async () => {
+    if (!remote) return { running: false, qrDataUrl: null, expiresAt: null, message: "Morphix Remote is not running." };
+    try {
+      const pair = remote.pairingLink(env("MORPHIX_REMOTE_SITE_URL"));
+      return { running: true, qrDataUrl: await QRCode.toDataURL(pair.url, { width: 300, margin: 2, color: { dark: "#071018", light: "#ffffff" } }), expiresAt: pair.expiresAt };
+    } catch (e) {
+      return { running: true, qrDataUrl: null, expiresAt: null, message: (e as Error).message };
+    }
+  });
   handle(IPC.latestPrintJob, (projectId: string) => printing.latest(safeId(String(projectId))));
   handle(IPC.requestPrint, (jobId: string) => {
     try {
@@ -641,6 +653,7 @@ app.whenReady().then(async () => {
   registerIpc();
   createWindow();
   void startPortal();
+  void startRemote();
   printer.start(POLL_SECONDS * 1000);
   if (resumable.length && meshy) generation.resume(resumable);
   const latest = ctx.db.get("SELECT id FROM projects ORDER BY updated_at DESC LIMIT 1");
@@ -650,21 +663,7 @@ app.whenReady().then(async () => {
 
 async function startPortal(): Promise<void> {
   try {
-    const backend = createPortalBackend({
-      ctx, jobs, actions, photo, printing,
-      printerStatus: () => printer.status,
-      cameraUrl: `${CAMERA_BASE}/?action=stream`,
-      meshyReady: () => meshy !== null,
-      dailyLimit: DAILY_LIMIT,
-      startText: (prompt, owner, jobId) => {
-        const text = prompt.trim().slice(0, 500);
-        actions.proposeCustom(
-          { kind: "generate", title: text.slice(0, 60), prompt: text, projectId: null, versionId: null, credits: actions.previewCredits(), details: [`Uses ${actions.previewCredits()} Meshy credits`, text.slice(0, 160)] },
-          () => generation.start({ prompt: text, title: text.slice(0, 60), kind: "preview", owner, jobId }),
-          () => jobs.cancel(jobId, "cancelled"),
-        );
-      },
-    });
+    const backend = sharedWebBackend();
     portal = createPortal({
       backend,
       auth: loadPortalAuthConfig(process.env),
@@ -684,12 +683,69 @@ async function startPortal(): Promise<void> {
   }
 }
 
+function sharedWebBackend() {
+  return createPortalBackend({
+      ctx, jobs, actions, photo, printing,
+      printerStatus: () => printer.status,
+      cameraUrl: `${CAMERA_BASE}/?action=stream`,
+      meshyReady: () => meshy !== null,
+      dailyLimit: DAILY_LIMIT,
+      startText: (prompt, owner, jobId) => {
+        const text = prompt.trim().slice(0, 500);
+        actions.proposeCustom(
+          { kind: "generate", title: text.slice(0, 60), prompt: text, projectId: null, versionId: null, credits: actions.previewCredits(), details: [`Uses ${actions.previewCredits()} Meshy credits`, text.slice(0, 160)] },
+          () => generation.start({ prompt: text, title: text.slice(0, 60), kind: "preview", owner, jobId }),
+          () => jobs.cancel(jobId, "cancelled"),
+        );
+      },
+    });
+}
+
+async function startRemote(): Promise<void> {
+  if (env("MORPHIX_REMOTE") === "0") return;
+  try {
+    const origins = (env("MORPHIX_REMOTE_ORIGINS") || "http://localhost:4173,http://localhost:5174").split(",").map((x) => x.trim().replace(/\/$/, "")).filter(Boolean);
+    remote = new MorphixRemote({
+      storage,
+      backend: sharedWebBackend(),
+      conversation: () => ctx.db.all("SELECT * FROM conversation ORDER BY created_at DESC LIMIT 50").reverse().map((r) => ({ id: String(r.id), role: r.role as "user" | "assistant", text: String(r.text), createdAt: String(r.created_at) })),
+      jobs: () => jobs.list(),
+      assistantText: (text) => voice.text(text),
+      assistantVoice: (pcm, rate) => voice.utterance(pcm, saveRecording(pcm, rate)),
+      setHeight: (versionId, heightMm) => {
+        const h = heightMm == null || heightMm === 0 ? null : Number(heightMm);
+        if (h !== null && !(h >= 10 && h <= 220)) throw new Error("height must be between 10 and 220 mm");
+        const v = ctx.db.get("SELECT * FROM model_versions WHERE id = ?", [safeId(versionId)]);
+        if (!v) throw new Error("model not found");
+        ctx.db.run("UPDATE model_versions SET target_height_mm = ? WHERE id = ?", [h, versionId]);
+        moveProject(ctx, String(v.project_id), "sizing");
+        return toVersion(ctx, { ...v, target_height_mm: h });
+      },
+      proposeRefine: (versionId) => actions.proposeRefine(safeId(versionId)),
+      prepare: (versionId, set) => printing.prepare(safeId(versionId), set, null, "morphix-remote"),
+      latestPrint: (projectId) => printing.latest(safeId(projectId)),
+      proposePrint: (jobId) => actions.proposePrint(safeId(jobId)),
+      printStatus: () => printing.status(),
+      pause: () => printing.pause(), resume: () => printing.resume(), cancel: () => printing.cancel(),
+      guardian: () => printing.view(),
+      guardianAnswer: (decision) => guardianVoice.answer(decision, "touch"),
+      log: (line) => log.write("info", `[remote] ${line}`),
+    }, { host: env("MORPHIX_REMOTE_HOST") || "127.0.0.1", port: Number(env("MORPHIX_REMOTE_PORT") || 8787), allowedOrigins: origins });
+    const r = await remote.start();
+    log.write("info", "Morphix Remote API started", r);
+  } catch (e) {
+    remote = null;
+    log.write("error", "Morphix Remote failed to start", { error: (e as Error).message });
+  }
+}
+
 app.on("window-all-closed", () => app.quit());
 app.on("before-quit", () => {
   printer.stop();
   voice.close();
   void printing.shutdown();
   void portal?.stop();
+  void remote?.stop();
   try {
     ctx.db?.close();
   } catch (e) {
