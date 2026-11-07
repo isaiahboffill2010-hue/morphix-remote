@@ -324,7 +324,7 @@ export class Printing {
       this.jobs?.done(this.printJobView, "send");
       this.busy = "starting print";
       this.emitStatus();
-      const start = await this.controller.startPrint({ jobId, fileName, authorization: auth });
+      const start = await this.controller.startPrint({ jobId, fileName, authorization: auth, expectedBytes: data.length });
       if (!start.confirmed) throw new Error(`print start not confirmed: ${start.error ?? "printer did not report printing"}`);
       this.tracker.track({ jobId, fileName, status: start.status });
       this.activeJobId = jobId;

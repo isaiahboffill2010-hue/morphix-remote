@@ -540,12 +540,19 @@ export class QD330Controller {
       const late = cleanReply(s.pendingText());
       if (REPLY_ERROR.test(late)) throw new Error(`printer reported an error during upload: ${late}`);
 
-      // The printer finishes writing the whole file before answering M29: big files take a while
-      // (a 5.8 MB file took > 15 s on the real QD330). Scale the wait with the file size.
-      const finishMs = Math.max(this.o.uploadFinishTimeoutMs, Math.min(180_000, 30_000 + (data.length / 1e6) * 15_000));
-      const m29 = await s.command("M29", finishMs);
+      // VERIFIED on the real QD330 (firmware v2.1.3): M29 is never answered — not for a 37-byte
+      // file, not for 5.8 MB — and the printer drops the connection ~30 s later if nothing else
+      // is sent. So wait briefly for a reply, then carry on in the same session. Completeness is
+      // checked when the print starts (M23 reports the stored file size).
+      let m29 = "";
+      try {
+        m29 = await s.command("M29", Math.min(this.o.uploadFinishTimeoutMs, 5_000));
+      } catch (e) {
+        if (!(e instanceof PrinterReplyTimeout)) throw e; // a dropped connection is a real failure
+        m29 = ""; // a silent M29 is normal on this firmware
+      }
       r.reply = m28 + m29;
-      if (!isAcknowledged(m29, "M29", fileName)) throw new Error(`printer did not finish the upload: ${cleanReply(m29)}`);
+      if (m29 && REPLY_ERROR.test(cleanReply(m29))) throw new Error(`printer did not finish the upload: ${cleanReply(m29)}`);
       r.acknowledged = true;
 
       const after = await this.listIn(s);
@@ -556,7 +563,7 @@ export class QD330Controller {
   }
 
   /** Starts a file already on the printer (M23). Consumes the authorization. Confirmed on BUILDING_FROM_SD + matching CurrentFile. */
-  async startPrint(opts: { jobId: string; fileName: string; authorization: PrintAuthorization | undefined }): Promise<ControlResult> {
+  async startPrint(opts: { jobId: string; fileName: string; authorization: PrintAuthorization | undefined; expectedBytes?: number }): Promise<ControlResult> {
     const meta: OpMeta = { jobId: opts?.jobId, fileName: opts?.fileName };
     this.assertEnabled("start", meta);
     const fileName = opts.fileName;
@@ -578,6 +585,16 @@ export class QD330Controller {
       r.reply = await s.command(`M23 0:/user/${fileName}`, this.o.startReplyTimeoutMs);
       r.acknowledged = isAcknowledged(r.reply, "M23", fileName);
       if (!r.acknowledged) throw new Error(`printer did not accept M23: ${cleanReply(r.reply)}`);
+      // M23 replies "File opened: <name> Size: <bytes>" — refuse to print a partly written file.
+      const size = /Size:\s*(\d+)/i.exec(r.reply);
+      if (opts.expectedBytes !== undefined && size && Number(size[1]) !== opts.expectedBytes) {
+        try {
+          await s.command("M26");
+        } catch {
+          /* best effort */
+        }
+        throw new Error(`stored file is ${size[1]} bytes but ${opts.expectedBytes} were sent; print cancelled`);
+      }
       await this.confirm(s, r, (st) => st.machine === STATUS_BUILDING && fileMatches(st.currentFile, fileName), this.o.startConfirmTimeoutMs, `${STATUS_BUILDING} with ${fileName}`);
     });
   }
