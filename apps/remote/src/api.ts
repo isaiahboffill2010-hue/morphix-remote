@@ -1,4 +1,6 @@
-export const API = (import.meta.env.VITE_MORPHIX_REMOTE_URL as string | undefined)?.replace(/\/$/, "") ?? "";
+const DEFAULT_REMOTE_URL = "https://3daimodel-morphix.taila52865.ts.net";
+
+export const API = ((import.meta.env.VITE_MORPHIX_REMOTE_URL as string | undefined) || DEFAULT_REMOTE_URL).replace(/\/$/, "");
 const key = "morphix.remote.token";
 export const token = () => localStorage.getItem(key) ?? "";
 export const saveToken = (v: string) => localStorage.setItem(key, v);

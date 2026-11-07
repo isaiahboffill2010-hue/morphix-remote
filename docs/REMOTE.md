@@ -85,7 +85,7 @@ Only `/api/health` and pairing are usable without a device token. The tunnel tok
 4. Add a Production environment variable:
 
    ```text
-   VITE_MORPHIX_REMOTE_URL=https://morphix-api.example.com
+   VITE_MORPHIX_REMOTE_URL=https://3daimodel-morphix.taila52865.ts.net
    ```
 
 5. Deploy. If Vercel first deploys `main`, open **Deployments -> Create Deployment** and enter the `morphix-remote` Git reference, then promote that deployment to Production.
