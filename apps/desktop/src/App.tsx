@@ -214,7 +214,7 @@ export function App() {
     } catch (e) {
       showNotice(`Microphone unavailable: ${(e as Error).message}`);
     }
-  }, [showNotice]);
+  }, [live, showNotice]);
 
   const stopTalk = useCallback(async () => {
     if (!ptt.current?.active) return;
