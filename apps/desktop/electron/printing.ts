@@ -313,7 +313,12 @@ export class Printing {
     try {
       this.ctx.db.run("UPDATE print_jobs SET state = 'uploading', approved_at = ?, updated_at = ? WHERE id = ?", [now(), now(), jobId]);
       walk(this.ctx, projectId, ["uploading"], { printControlsEnabled: true, userApproved: true });
-      const up = await this.controller.uploadFile(fileName, data, { jobId, authorization: auth });
+      const up = await this.controller.uploadFile(fileName, data, {
+        jobId,
+        authorization: auth,
+        overwrite: true, // a retry of the same job re-sends its file
+        onProgress: (p) => this.jobs?.update(this.printJobView, "send", p.percent, `${Math.round(p.bytesSent / 1e5) / 10} of ${Math.round(p.totalBytes / 1e5) / 10} MB`),
+      });
       if (!up.confirmed) throw new Error(`upload not confirmed: ${up.error ?? up.reply ?? "no reply"}`);
       walk(this.ctx, projectId, ["ready"], { printControlsEnabled: true, userApproved: true });
       this.jobs?.done(this.printJobView, "send");

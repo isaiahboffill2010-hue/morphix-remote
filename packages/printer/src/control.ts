@@ -540,7 +540,10 @@ export class QD330Controller {
       const late = cleanReply(s.pendingText());
       if (REPLY_ERROR.test(late)) throw new Error(`printer reported an error during upload: ${late}`);
 
-      const m29 = await s.command("M29", this.o.uploadFinishTimeoutMs);
+      // The printer finishes writing the whole file before answering M29: big files take a while
+      // (a 5.8 MB file took > 15 s on the real QD330). Scale the wait with the file size.
+      const finishMs = Math.max(this.o.uploadFinishTimeoutMs, Math.min(180_000, 30_000 + (data.length / 1e6) * 15_000));
+      const m29 = await s.command("M29", finishMs);
       r.reply = m28 + m29;
       if (!isAcknowledged(m29, "M29", fileName)) throw new Error(`printer did not finish the upload: ${cleanReply(m29)}`);
       r.acknowledged = true;
