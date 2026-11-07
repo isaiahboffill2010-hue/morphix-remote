@@ -259,3 +259,41 @@ function* iterateLines(text: string): Iterable<string> {
     start = end + 1;
   }
 }
+
+/**
+ * Slows the first `layers` layers to `factor` of the sliced speed by scaling every F on
+ * G0-G3 moves (travel included), then restores the last real feed rate when the next layer
+ * starts. Done here rather than with M220 so it works whatever the printer's firmware
+ * supports. Layers are counted by the ";LAYER_CHANGE" marker PrusaSlicer and OrcaSlicer
+ * always write; G-code without markers is returned unchanged.
+ */
+export function slowFirstLayers(gcode: string, layers = 5, factor = 0.5): string {
+  if (layers <= 0 || factor >= 1 || factor <= 0) return gcode;
+  const lines = gcode.split("\n");
+  const out: string[] = [];
+  let layer = -1;
+  let lastF: number | null = null;
+  for (const line of lines) {
+    if (/^;LAYER_CHANGE\b/.test(line)) {
+      layer++;
+      out.push(line);
+      // The feed rate is modal: put the real one back so layer N+1 doesn't inherit a halved F.
+      if (layer === layers && lastF !== null) out.push(`G1 F${fmtF(lastF)} ; Morphix: back to normal speed`);
+      else if (layer === 0) out.push(`; Morphix: first ${layers} layers at ${Math.round(factor * 100)}% speed`);
+      continue;
+    }
+    const move = /^G[0-3](?:\s|$)/.test(line);
+    const f = move ? /(\sF)(\d*\.?\d+)/.exec(line) : null;
+    if (!f) {
+      out.push(line);
+      continue;
+    }
+    const feed = Number(f[2]);
+    lastF = feed;
+    if (layer >= 0 && layer < layers) out.push(line.slice(0, f.index) + f[1] + fmtF(feed * factor) + line.slice(f.index + f[0].length));
+    else out.push(line);
+  }
+  return out.join("\n");
+}
+
+const fmtF = (f: number) => String(Math.max(1, Math.round(f)));

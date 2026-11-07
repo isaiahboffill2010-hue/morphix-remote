@@ -7,7 +7,7 @@ import { tmpdir } from "node:os";
 import { existsSync } from "node:fs";
 import { basename, dirname, extname, join } from "node:path";
 import { isGlb, parseGlb } from "./glb";
-import { analyzeGcode, type GcodeEstimates } from "./gcode";
+import { analyzeGcode, slowFirstLayers, type GcodeEstimates } from "./gcode";
 import { GX_LAYOUT_VERIFIED, validateGx, writeGx, type GxValidation } from "./gx";
 import { computeBounds, type Mesh, type Vec3 } from "./mesh";
 import { applyOrientation, autoOrient, checkFit, DEFAULT_BUILD_VOLUME, placeOnPlate, scaleToHeight, type BuildVolume, type BuildVolumeResult, type OrientationResult } from "./place";
@@ -56,6 +56,10 @@ export interface PreparePrintOptions {
   /** Base file name for outputs (default "model"). */
   baseName?: string;
   sliceTimeoutMs?: number;
+  /** Print the first N layers slower for better bed adhesion (default 5; 0 = off). */
+  slowFirstLayers?: number;
+  /** Speed factor for those layers (default 0.5 = half speed). */
+  slowFirstLayersFactor?: number;
   /** Injected process runner (tests). */
   exec?: ExecFileFn;
   /** Slicer auto-detection options (search path, env). */
@@ -261,13 +265,14 @@ export async function preparePrint(input: PreparePrintInput): Promise<PreparePri
     return result;
   }
   files.gcode = join(dir, `${base}.gcode`);
-  await writeFile(files.gcode, sliced.gcode);
+  const gcodeText = slowFirstLayers(sliced.gcode, o.slowFirstLayers ?? 5, o.slowFirstLayersFactor ?? 0.5);
+  await writeFile(files.gcode, gcodeText);
   const est = sliced.estimates;
   result.gcode = { path: files.gcode, estimates: est };
   result.estimates = { printTimeS: est.printTimeS, filamentMm: est.filamentMm, filamentG: est.filamentG, layerCount: est.layerCount, source: "slicer" };
 
   progress("gx");
-  const gx = gxFromGcode(sliced.gcode, thumbnailBmp, est, o.layerHeightMm, o.perimeters);
+  const gx = gxFromGcode(gcodeText, thumbnailBmp, est, o.layerHeightMm, o.perimeters);
   const validation = validateGx(gx);
   files.gx = join(dir, `${base}.gx`);
   await writeFile(files.gx, gx);

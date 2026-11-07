@@ -11,6 +11,7 @@ import {
   prusaArgs,
   QD330_PLA_DEFAULTS,
   readGx,
+  slowFirstLayers,
   resolveProfilePaths,
   sliceStl,
   validateGx,
@@ -189,7 +190,7 @@ describe("preparePrint", () => {
     expect(r.gx.validation.ok).toBe(true);
     const onDisk = await readFile(r.files.gx!);
     expect(validateGx(onDisk).ok).toBe(true);
-    expect(readGx(onDisk).gcode.toString()).toBe(PRUSA_GCODE);
+    expect(readGx(onDisk).gcode.toString()).toBe(slowFirstLayers(PRUSA_GCODE)); // first 5 layers at half speed
     expect(r.warnings.join(" ")).toMatch(/UNVERIFIED/);
   });
 
