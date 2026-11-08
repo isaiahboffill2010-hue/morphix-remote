@@ -15,6 +15,10 @@ export interface RemoteDeps {
   jobs(): JobView[];
   assistantText(text: string): Promise<void>;
   assistantVoice(pcm16: Buffer, sampleRate: number): Promise<void>;
+  voiceAudio(after: number): {
+    next: number;
+    events: ({ seq: number; type: "audio"; pcm: string; sampleRate: number } | { seq: number; type: "interrupted" })[];
+  };
   setHeight(versionId: string, heightMm: number | null): unknown;
   proposeRefine(versionId: string): unknown;
   prepare(versionId: string, settings: PrepareSettings | "auto"): Promise<PrepareSummary>;
@@ -161,6 +165,7 @@ export class MorphixRemote {
     if (req.method === "GET" && u.pathname === "/api/camera/snapshot") { await this.cameraSnapshot(res); return; }
     if (req.method === "GET" && u.pathname === "/api/camera") { const c = await this.d.backend.cameraStream(USER); if (!c) { json(res, 503, { error: "camera_unavailable" }); return; } res.writeHead(200, { "Content-Type": c.contentType, "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff" }); c.stream.pipe(res); req.once("close", () => c.stream.destroy()); return; }
     if (req.method === "GET" && u.pathname === "/api/conversation") { json(res, 200, { conversation: this.d.conversation() }); return; }
+    if (req.method === "GET" && u.pathname === "/api/assistant/audio") { json(res, 200, this.d.voiceAudio(Number(u.searchParams.get("after") ?? 0))); return; }
     if (req.method === "POST" && u.pathname === "/api/models/search") { const b = await this.input(req); json(res, 200, await this.d.searchModels(String(b.query ?? ""))); return; }
     if (req.method === "POST" && u.pathname === "/api/models/select") { const b = await this.input(req); json(res, 200, { result: this.d.selectModel(String(b.id ?? "")) }); return; }
     if (req.method === "POST" && u.pathname === "/api/models/import") { const b = await this.input(req, 80_000_000); const raw = Array.isArray(b.files) ? b.files : []; if (!raw.length || raw.length > 20) throw new Error("Choose 1 to 20 model files."); const files = raw.map((v:any) => { const bytes=Buffer.from(String(v.data??""),"base64"); if(!bytes.length||bytes.length>20_000_000) throw new Error("Each model file must be under 20 MB."); return {name:String(v.name??"model.stl").slice(0,120),bytes}; }); json(res, 201, await this.d.importModels({ resultId:String(b.resultId??""), files })); return; }

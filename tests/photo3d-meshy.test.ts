@@ -16,7 +16,17 @@ describe("Meshy image clients", () => {
     expect(c.body.image_url).toMatch(/^data:image\/jpeg;base64,/);
     expect(c.body.target_formats).toEqual(["glb", "stl"]);
     expect(c.body.should_texture).toBe(false);
+    expect(c.body.should_remesh).toBe(true);
+    expect(c.body.target_polycount).toBe(100000);
     expect(c.body.ai_model).toBe("meshy-7.1");
+  });
+
+  it("requests Ultra full-detail geometry without a decimating remesh", async () => {
+    const m = fakeMeshy();
+    await m.client.create(checkPhotos([{ mime: "image/png", bytes: PNG }]), { geometryResolution: "4k", shouldRemesh: false });
+    expect(m.calls[0].body).toMatchObject({ ai_model: "meshy-7.1", geometry_resolution: "4k", should_remesh: false });
+    expect(m.calls[0].body).not.toHaveProperty("target_polycount");
+    expect(m.calls[0].body).not.toHaveProperty("topology");
   });
 
   it("uses multi-image-to-3d for 2-4 photos and skips HEIC", async () => {

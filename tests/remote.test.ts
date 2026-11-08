@@ -15,6 +15,7 @@ describe("Morphix Remote pairing", () => {
     const storage = new Storage(root); storage.init();
     const remote = new MorphixRemote({
       storage, backend: new FakeBackend({ storageRoot: root, tickMs: 0 }), conversation: () => [], jobs: () => [], assistantText: async () => {}, assistantVoice: async () => {},
+      voiceAudio: (after) => ({ next: 1, events: after < 1 ? [{ seq: 1, type: "audio" as const, pcm: "AAA=", sampleRate: 24000 }] : [] }),
       setHeight: () => ({}), proposeRefine: () => ({}), prepare: async () => ({ ok: false } as never), latestPrint: () => null,
       proposePrint: () => ({}), printStatus: () => ({ enabled: false, gxVerified: false, job: null, busy: null, lastMessage: null }),
       smartSearch: () => null, searchModels: async () => ({ id: "s", query: "q", status: "ready", results: [] }), selectModel: () => { throw new Error("none"); },
@@ -32,6 +33,8 @@ describe("Morphix Remote pairing", () => {
       const { token } = await paired.json() as { token: string };
       const state = await fetch(`${url}/api/state`, { headers: { Origin: "https://morphix.example", Authorization: `Bearer ${token}` } });
       expect(state.status).toBe(200);
+      const audio = await fetch(`${url}/api/assistant/audio?after=0`, { headers: { Origin: "https://morphix.example", Authorization: `Bearer ${token}` } });
+      expect(await audio.json()).toMatchObject({ next: 1, events: [{ type: "audio", sampleRate: 24000 }] });
       const replay = await fetch(`${url}/api/pair`, { method: "POST", headers: { Origin: "https://morphix.example", "Content-Type": "application/json" }, body: JSON.stringify({ code, name: "Stranger" }) });
       expect(replay.status).toBe(401);
       const badOrigin = await fetch(`${url}/api/state`, { headers: { Origin: "https://evil.example", Authorization: `Bearer ${token}` } });

@@ -45,6 +45,8 @@ export interface MeshyImageOptions {
   texturePrompt?: string;
   geometryResolution?: "standard" | "2k" | "4k";
   targetPolycount?: number;
+  /** Keep Meshy's full-detail geometry when false. Highest quality, but a larger mesh. */
+  shouldRemesh?: boolean;
   imageEnhancement?: boolean;
   moderation?: boolean;
 }
@@ -134,16 +136,19 @@ export class MeshyImageClient {
     const usable = images.filter((i) => MESHY_IMAGE_MIMES.includes(i.mime));
     if (usable.length === 0) throw new Photo3dError("MX-P3D-001", "Meshy needs at least one JPEG, PNG or WebP photo (HEIC is not accepted).");
     const kind: MeshyImageKind = usable.length > 1 ? "multi-image-to-3d" : "image-to-3d";
+    const shouldRemesh = o.shouldRemesh ?? true;
     const body: Record<string, unknown> = {
       ai_model: o.model ?? DEFAULT_MESHY_IMAGE_MODEL,
       should_texture: o.texture ?? false,
-      should_remesh: true,
-      topology: "triangle",
-      target_polycount: o.targetPolycount ?? 30000,
+      should_remesh: shouldRemesh,
       target_formats: ["glb", "stl"],
       image_enhancement: o.imageEnhancement ?? true,
       moderation: o.moderation ?? false,
     };
+    if (shouldRemesh) {
+      body.topology = "triangle";
+      body.target_polycount = o.targetPolycount ?? 100000;
+    }
     if (o.geometryResolution && o.geometryResolution !== "standard") body.geometry_resolution = o.geometryResolution;
     if (o.texture && o.texturePrompt) body.texture_prompt = o.texturePrompt.slice(0, 800);
     if (kind === "multi-image-to-3d") body.image_urls = usable.slice(0, MESHY_MAX_MULTI_IMAGES).map(toDataUri);

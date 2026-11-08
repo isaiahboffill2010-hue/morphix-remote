@@ -17,6 +17,55 @@ const b64 = (file: File) =>
     r.readAsDataURL(file);
   });
 
+async function uploadModelFiles(resultId: string, selected: FileList | File[]) {
+  const chosen = Array.from(selected);
+  if (!chosen.length) throw new Error("Choose an STL file first.");
+  const tooLarge = chosen.find((file) => file.size > 20_000_000);
+  if (tooLarge) throw new Error(`${tooLarge.name} is larger than 20 MB.`);
+  return post<any>("/api/models/import", {
+    resultId,
+    files: await Promise.all(chosen.map(async (file) => ({ name: file.name, data: await b64(file) }))),
+  });
+}
+
+class PhoneAudio {
+  private ctx: AudioContext | null = null;
+  private nextAt = 0;
+  private sources = new Set<AudioBufferSourceNode>();
+
+  async unlock() {
+    this.ctx ??= new AudioContext();
+    if (this.ctx.state === "suspended") await this.ctx.resume();
+  }
+
+  async play(base64: string, sampleRate: number) {
+    await this.unlock();
+    const ctx = this.ctx!;
+    const raw = atob(base64), samples = new Float32Array(Math.floor(raw.length / 2));
+    for (let i = 0; i < samples.length; i++) {
+      let value = raw.charCodeAt(i * 2) | (raw.charCodeAt(i * 2 + 1) << 8);
+      if (value & 0x8000) value -= 0x10000;
+      samples[i] = value / 32768;
+    }
+    const buffer = ctx.createBuffer(1, samples.length, sampleRate);
+    buffer.copyToChannel(samples, 0);
+    const source = ctx.createBufferSource();
+    source.buffer = buffer;
+    source.connect(ctx.destination);
+    const start = Math.max(ctx.currentTime + 0.025, this.nextAt);
+    source.start(start);
+    this.nextAt = start + buffer.duration;
+    this.sources.add(source);
+    source.onended = () => this.sources.delete(source);
+  }
+
+  stop() {
+    this.sources.forEach((source) => { try { source.stop(); } catch { /* already stopped */ } });
+    this.sources.clear();
+    this.nextAt = 0;
+  }
+}
+
 function Pair({ onDone }: { onDone: () => void }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -149,18 +198,40 @@ function Chat({ state, refresh }: { state: State; refresh: () => void }) {
     stream: MediaStream;
     chunks: Int16Array[];
   } | null>(null);
+  const phoneAudio = useRef(new PhoneAudio());
+  useEffect(() => {
+    let dead = false, cursor = 0, polling = false;
+    const poll = async (initial = false) => {
+      if (dead || polling || !token()) return;
+      polling = true;
+      try {
+        const result = await request<any>(`/api/assistant/audio?after=${initial ? Number.MAX_SAFE_INTEGER : cursor}`);
+        if (initial) cursor = result.next || 0;
+        else {
+          for (const event of result.events || []) {
+            if (event.type === "interrupted") phoneAudio.current.stop();
+            else if (event.type === "audio") await phoneAudio.current.play(event.pcm, event.sampleRate);
+          }
+          cursor = result.next ?? cursor;
+        }
+      } catch { /* the normal state poll reports connection problems */ }
+      finally { polling = false; }
+    };
+    void poll(true);
+    const timer = setInterval(() => void poll(), 400);
+    return () => { dead = true; clearInterval(timer); phoneAudio.current.stop(); };
+  }, []);
   const turns = state?.conversation || [];
   async function importParts(resultId:string, selected:FileList|null){
     const chosen=Array.from(selected||[]); if(!chosen.length)return;
     setBusy(true);
     try{
-      const files=[] as {name:string;data:string}[];
-      for(const file of chosen){const bytes=new Uint8Array(await file.arrayBuffer());let binary="";for(let i=0;i<bytes.length;i+=8192)binary+=String.fromCharCode(...bytes.slice(i,i+8192));files.push({name:file.name,data:btoa(binary)})}
-      const out=await post<any>("/api/models/import",{resultId,files}); alert(`Imported ${out.parts.length} printable part${out.parts.length===1?"":"s"} to the Pi.${out.warnings.length?` ${out.warnings.join(" ")}`:""}`); await refresh();
+      const out=await uploadModelFiles(resultId, chosen); alert(`Imported ${out.parts.length} printable part${out.parts.length===1?"":"s"} to the Pi.${out.warnings.length?` ${out.warnings.join(" ")}`:""}`); await refresh();
     }catch(e){alert((e as Error).message)}finally{setBusy(false)}
   }
   async function send() {
     if (!text.trim()) return;
+    await phoneAudio.current.unlock();
     setBusy(true);
     const v = text;
     setText("");
@@ -207,6 +278,7 @@ function Chat({ state, refresh }: { state: State; refresh: () => void }) {
       }
       return;
     }
+    await phoneAudio.current.unlock();
     const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
     const ctx = new AudioContext({ sampleRate: 16000 }),
       source = ctx.createMediaStreamSource(stream),
@@ -686,14 +758,16 @@ function AuthImage({ path, alt }: { path: string; alt: string }) {
 }
 
 function Create({ onStarted }: { onStarted: () => void }) {
-  const [mode, setMode] = useState<"photo" | "idea">("photo"),
+  const [mode, setMode] = useState<"photo" | "idea" | "stl">("photo"),
     [files, setFiles] = useState<File[]>([]),
     [description, setDescription] = useState(""),
     [busy, setBusy] = useState(false);
   async function go() {
     setBusy(true);
     try {
-      if (mode === "idea")
+      if (mode === "stl") {
+        await uploadModelFiles("", files);
+      } else if (mode === "idea")
         await post("/api/requests/text", { prompt: description });
       else
         await post("/api/requests/photo", {
@@ -729,6 +803,12 @@ function Create({ onStarted }: { onStarted: () => void }) {
         >
           ✦ Describe an idea
         </button>
+        <button
+          className={mode === "stl" ? "active" : ""}
+          onClick={() => { setMode("stl"); setFiles([]); }}
+        >
+          ◇ Upload an STL
+        </button>
       </div>
       {mode === "photo" && (
         <label className="drop">
@@ -757,7 +837,29 @@ function Create({ onStarted }: { onStarted: () => void }) {
           )}
         </label>
       )}
-      <label className="prompt-label">
+      {mode === "stl" && (
+        <label className="drop">
+          <input
+            type="file"
+            accept=".stl,model/stl,application/sla"
+            onChange={(e) => setFiles(Array.from(e.target.files || []).slice(0, 1))}
+          />
+          {files.length ? (
+            <>
+              <span>✓</span>
+              <b>{files[0].name}</b>
+              <p>{(files[0].size / 1_000_000).toFixed(1)} MB · ready to upload</p>
+            </>
+          ) : (
+            <>
+              <span>◇</span>
+              <b>Choose an STL file</b>
+              <p>Binary or ASCII STL · maximum 20 MB</p>
+            </>
+          )}
+        </label>
+      )}
+      {mode !== "stl" && <label className="prompt-label">
         {mode === "photo" ? "Tell Gemini what you want" : "Describe your model"}
         <textarea
           rows={5}
@@ -770,8 +872,8 @@ function Create({ onStarted }: { onStarted: () => void }) {
               : "“A friendly robot planter with round feet…”"
           }
         />
-      </label>
-      <div className="ai-note">
+      </label>}
+      {mode !== "stl" ? <div className="ai-note">
         <span>✦</span>
         <p>
           <b>
@@ -782,15 +884,15 @@ function Create({ onStarted }: { onStarted: () => void }) {
           It will create a clearer Meshy prompt while preserving what you asked
           for.
         </p>
-      </div>
+      </div> : <div className="ai-note"><span>✓</span><p><b>Morphix checks the mesh before saving it</b><br />Your STL stays on your Raspberry Pi and can be sized, prepared, and sliced after upload.</p></div>}
       <button
         className="primary wide"
         disabled={
-          busy || !description.trim() || (mode === "photo" && !files.length)
+          busy || (mode !== "stl" && !description.trim()) || ((mode === "photo" || mode === "stl") && !files.length) || (mode === "stl" && files[0]?.size > 20_000_000)
         }
         onClick={go}
       >
-        {busy ? "Sending securely…" : "Analyze & create model"}
+        {busy ? (mode === "stl" ? "Uploading securely…" : "Sending securely…") : (mode === "stl" ? "Upload STL to Morphix" : "Analyze & create model")}
       </button>
     </section>
   );

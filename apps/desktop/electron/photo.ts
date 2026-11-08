@@ -86,8 +86,13 @@ export class PhotoPipeline {
 
       const engine = scan ? "scan" : (analysis?.recommendedEngine ?? "meshy-image");
       const usesMeshy = engine === "meshy-image" || engine === "meshy-multi-image";
-      const credits = usesMeshy ? meshyImageCost({}) : 0;
-      const go = () => void this.build(jobId, title, { ...base, analysis, engine: scan ? "scan" : "auto" }, deps, credits);
+      // Preserve Meshy 7.1's full-detail mesh instead of decimating it to the old
+      // 30k-face default. Ultra 4K is single-image only; multi-image supports 2K.
+      const meshyQuality = usesMeshy
+        ? { geometryResolution: engine === "meshy-multi-image" ? "2k" as const : "4k" as const, shouldRemesh: false }
+        : undefined;
+      const credits = usesMeshy ? meshyImageCost(meshyQuality) : 0;
+      const go = () => void this.build(jobId, title, { ...base, analysis, engine: scan ? "scan" : "auto", meshy: meshyQuality }, deps, credits);
 
       if (usesMeshy) {
         if (!deps.meshy) throw new Error("Meshy is not configured (MESHY_API_KEY)");

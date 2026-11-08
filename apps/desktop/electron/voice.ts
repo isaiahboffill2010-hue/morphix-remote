@@ -26,6 +26,11 @@ interface Turn {
   warningHandled?: boolean;
 }
 
+type VoiceOutput = "pi" | "remote";
+type RemoteVoiceEvent =
+  | { seq: number; type: "audio"; pcm: string; sampleRate: number }
+  | { seq: number; type: "interrupted" };
+
 export class VoiceController {
   private live: GeminiLive | null = null;
   private turn: Turn | null = null;
@@ -34,6 +39,9 @@ export class VoiceController {
   private audioWaiter: (() => void) | null = null;
   /** Drop Gemini audio until the turn ends (a warning that timed out and went to the local voice). */
   private muteUntilTurnEnd = false;
+  private output: VoiceOutput = "pi";
+  private remoteSeq = 0;
+  private remoteEvents: RemoteVoiceEvent[] = [];
   guardianVoice: GuardianVoice | null = null;
 
   constructor(
@@ -147,7 +155,35 @@ export class VoiceController {
 
   private emit(e: VoiceEvent): void {
     if (e.type === "error") this.ctx.log.write("warn", "voice error shown", { message: e.message });
+    if (this.output === "remote" && e.type === "audio") {
+      this.remoteEvents.push({ seq: ++this.remoteSeq, type: "audio", pcm: Buffer.from(e.pcm).toString("base64"), sampleRate: e.sampleRate });
+      this.trimRemoteEvents();
+      return;
+    }
+    if (this.output === "remote" && e.type === "interrupted") {
+      this.remoteEvents.push({ seq: ++this.remoteSeq, type: "interrupted" });
+      this.trimRemoteEvents();
+      return;
+    }
     this.ctx.send(IPC.voiceEvent, e);
+  }
+
+  private trimRemoteEvents(): void {
+    let bytes = 0;
+    let keepFrom = this.remoteEvents.length;
+    for (let i = this.remoteEvents.length - 1; i >= 0; i--) {
+      const event = this.remoteEvents[i];
+      bytes += event.type === "audio" ? event.pcm.length : 16;
+      if (bytes > 8_000_000 || this.remoteEvents.length - i > 500) break;
+      keepFrom = i;
+    }
+    if (keepFrom > 0) this.remoteEvents.splice(0, keepFrom);
+  }
+
+  /** Audio generated for paired-phone turns, read incrementally by Morphix Remote. */
+  remoteAudio(after: number): { next: number; events: RemoteVoiceEvent[] } {
+    const cursor = Number.isFinite(after) && after >= 0 ? Math.floor(after) : 0;
+    return { next: this.remoteSeq, events: this.remoteEvents.filter((event) => event.seq > cursor) };
   }
 
   private async connect(): Promise<GeminiLive> {
@@ -168,7 +204,7 @@ export class VoiceController {
   }
 
   /** One push-to-talk utterance (16 kHz PCM16). */
-  async utterance(pcm: Buffer, audioRel: string | null): Promise<void> {
+  async utterance(pcm: Buffer, audioRel: string | null, output: VoiceOutput = "pi"): Promise<void> {
     const { rms, peak, seconds } = speechStats(pcm, 16000);
     this.ctx.log.write("info", "voice turn", { seconds: Math.round(seconds * 10) / 10, rms: Math.round(rms * 1000) / 1000, peak: Math.round(peak * 100) / 100 });
     if (seconds < 0.4 || (rms < 0.006 && peak < 0.04)) {
@@ -177,15 +213,17 @@ export class VoiceController {
       return;
     }
     const live = await this.connect();
+    this.output = output;
     this.turn = { startedAt: Date.now(), audioBytes: 0, user: "", assistant: "", audioRel, system: false };
     this.emit({ type: "status", state: "thinking" });
     live.sendUtterance(pcm);
   }
 
-  async text(text: string): Promise<void> {
+  async text(text: string, output: VoiceOutput = "pi"): Promise<void> {
     const t = text.trim().slice(0, 500);
     if (!t) return;
     const live = await this.connect();
+    this.output = output;
     this.turn = { startedAt: Date.now(), audioBytes: 0, user: t, assistant: "", audioRel: null, system: false };
     this.emit({ type: "user-text", text: t });
     this.emit({ type: "status", state: "thinking" });
@@ -232,6 +270,7 @@ export class VoiceController {
         void gv.answer(decision, "voice", true);
       }
     }
+    this.output = "pi";
   }
 
   // ---------------------------------------------------------------------

@@ -716,7 +716,17 @@ function sharedWebBackend() {
 }
 
 async function importSmartModelFiles(resultId: string, files: { name: string; bytes: Buffer }[]) {
-  const result = smartSearch.select(resultId);
+  const result = resultId
+    ? smartSearch.select(resultId)
+    : {
+        name: files.length === 1 ? files[0].name.replace(/\.[^.]+$/, "") || "Uploaded model" : "Uploaded model",
+        pageUrl: "Morphix Remote upload",
+        license: "User supplied",
+        creator: "Morphix Remote user",
+        nonPrintedParts: [],
+        assembly: [],
+        evidence: [],
+      };
   const supported: { name: string; stl: Buffer; notes: string[] }[] = [];
   const preserved: string[] = [], warnings: string[] = [];
   for (const file of files) {
@@ -731,7 +741,7 @@ async function importSmartModelFiles(resultId: string, files: { name: string; by
   }
   if (!supported.length) throw new Error("No printable STL, OBJ, PLY or GLB mesh was found. Keep the original files and export at least one part as STL.");
   const projectId=randomUUID(), versionId=randomUUID(), t=now();
-  ctx.db.run("INSERT INTO projects(id,title,prompt,state,created_at,updated_at) VALUES (?,?,?,?,?,?)",[projectId,result.name,`Imported from ${result.pageUrl}`,"idea",t,t]);
+  ctx.db.run("INSERT INTO projects(id,title,prompt,state,created_at,updated_at) VALUES (?,?,?,?,?,?)",[projectId,result.name,resultId ? `Imported from ${result.pageUrl}` : "Uploaded from Morphix Remote","idea",t,t]);
   moveProject(ctx,projectId,"generating");
   const dir=storage.modelDir(projectId,versionId);
   for (const [i,part] of supported.entries()) {
@@ -761,8 +771,9 @@ async function startRemote(): Promise<void> {
       backend: sharedWebBackend(),
       conversation: () => ctx.db.all("SELECT * FROM conversation ORDER BY created_at DESC LIMIT 50").reverse().map((r) => ({ id: String(r.id), role: r.role as "user" | "assistant", text: String(r.text), createdAt: String(r.created_at) })),
       jobs: () => jobs.list(),
-      assistantText: (text) => voice.text(text),
-      assistantVoice: (pcm, rate) => voice.utterance(pcm, saveRecording(pcm, rate)),
+      assistantText: (text) => voice.text(text, "remote"),
+      assistantVoice: (pcm, rate) => voice.utterance(pcm, saveRecording(pcm, rate), "remote"),
+      voiceAudio: (after) => voice.remoteAudio(after),
       setHeight: (versionId, heightMm) => {
         const h = heightMm == null || heightMm === 0 ? null : Number(heightMm);
         if (h !== null && !(h >= 10 && h <= 220)) throw new Error("height must be between 10 and 220 mm");
